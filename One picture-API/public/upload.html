@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>上传图片</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family:"Microsoft YaHei";
+      background-size: cover;
+      background-position: center;
+      transition: background-image 0.5s ease;
+      color: #fff;
+    }
+
+    .container {
+      max-width: 500px;
+      margin: 50px auto;
+      background: rgba(0,0,0,0.6);
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      text-shadow: 0 0 5px #000;
+    }
+
+    label {
+      display: block;
+      margin: 10px 0;
+    }
+
+    input[type="file"], input[type="text"], select {
+      width: 100%;
+      padding: 8px;
+      border-radius: 6px;
+      border: none;
+      margin-top: 5px;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      margin-top: 15px;
+      cursor: pointer;
+      background-color: rgba(0,123,255,0.8);
+      color: #fff;
+      transition: background 0.3s;
+    }
+    button:hover {
+      background-color: rgba(0,123,255,1);
+    }
+
+    #result {
+      margin-top: 20px;
+      white-space: pre-wrap;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>上传图片</h1>
+  <form id="uploadForm">
+    <label>选择图片：
+      <input type="file" name="file" required>
+    </label>
+    <label>类别：
+      <select name="category">
+        <option value="web">PC</option>
+        <option value="m">手机</option>
+      </select>
+    </label>
+    <label>Token：
+      <input type="text" name="token" required placeholder="请输入 token">
+    </label>
+    <button type="submit">上传</button>
+  </form>
+  <div id="result"></div>
+</div>
+
+<script>
+  const form = document.getElementById('uploadForm');
+  const result = document.getElementById('result');
+  const body = document.body;
+
+  // 判断设备类型
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
+  const apiPath = isMobile ? '/api/m' : '/api/web';
+
+  // 刷新背景
+  async function refreshBackground() {
+    const url = apiPath + "?t=" + Date.now(); // 防缓存
+    body.style.backgroundImage = `url(${url})`;
+  }
+
+  refreshBackground();
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = new FormData(form);
+    try {
+      const res = await fetch('/api/upload', { method:'POST', body: data });
+      const json = await res.json();
+      result.innerText = JSON.stringify(json, null, 2);
+
+      // 上传成功后刷新背景
+      if (json.status === "ok") {
+        refreshBackground();
+      }
+    } catch(err) {
+      result.innerText = "上传失败: " + err;
+    }
+  });
+</script>
+
+</body>
+</html>
