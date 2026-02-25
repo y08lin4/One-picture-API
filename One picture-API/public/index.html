@@ -3,126 +3,132 @@
 <head>
   <meta charset="UTF-8">
   <title>随机图 API</title>
-  <style>
-    html, body {
-      margin: 0; padding:0; height:100%;
-      font-family:"Microsoft YaHei";
-      background-size: cover;
-      background-position: center;
-      transition: background-image 0.5s ease;
-      color:#fff;
-    }
-    .container {
-      max-width:600px; margin:50px auto;
-      background: rgba(0,0,0,0.6);
-      padding:30px;
-      border-radius:12px;
-      box-shadow:0 0 20px rgba(0,0,0,0.5);
-      text-align:center;
-    }
-    h1{margin-bottom:20px;text-shadow:0 0 5px #000;}
-    button{padding:10px 20px;margin:5px;border:none;border-radius:8px;cursor:pointer;background:rgba(0,123,255,0.8);color:#fff;transition:0.3s;}
-    button:hover{background:rgba(0,123,255,1);}
-    a{color:#99ccff;text-decoration:none;}
-    a:hover{text-decoration:underline;}
-    .section{text-align:left;margin-top:20px;}
-    .stats{margin-top:20px; background: rgba(255,255,255,0.1); padding:15px; border-radius:10px;}
-    .stats h2{margin-top:0;text-align:center;}
-    .stats table{width:100%; color:#fff; border-collapse: collapse; text-align:left;}
-    .stats th, .stats td{padding:6px; border-bottom:1px solid rgba(255,255,255,0.3);}
-    #timeDisplay{margin-top:10px;text-align:center;font-size:14px;color:#ffeb3b;}
-  </style>
+  <link rel="stylesheet" href="/public/common.css">
 </head>
 <body>
 
-<div class="container">
-  <h1>随机图 API</h1>
+<div class="topbar-actions">
   <button id="refreshBtn">刷新背景</button>
-  <button onclick="location.href='/public/upload.html'">上传图片</button>
-
-  <div class="section">
-    <h2>跳转接口</h2>
-    <a href="/api/web" target="_blank">/api/web → 随机 PC 图片</a><br>
-    <a href="/api/m" target="_blank">/api/m → 随机手机图片</a>
-  </div>
-
-  <div class="section">
-    <h2>JSON 接口</h2>
-    <a href="/api/web/json" target="_blank">/api/web/json → 返回 PC 图片 URL</a><br>
-    <a href="/api/m/json" target="_blank">/api/m/json → 返回手机图片 URL</a>
-  </div>
-
-  <div class="section stats">
-    <h2>使用统计</h2>
-    <table>
-      <thead>
-        <tr><th>接口</th><th>今日调用</th><th>总调用</th></tr>
-      </thead>
-      <tbody id="statsBody">
-        <!-- 数据由 JS 填充 -->
-      </tbody>
-    </table>
-  </div>
-
-  <div id="timeDisplay">北京时间：--:--:--</div>
+  <button onclick="location.href='/public/login.html'">登录 / 上传</button>
+  <button onclick="location.href='/public/admin.html'">标签管理</button>
 </div>
 
+<div class="container home-container">
+  <h1>✨ One Picture API</h1>
+
+  <div class="home-grid">
+    <section class="section endpoint-card">
+      <h2>跳转接口</h2>
+      <a class="endpoint-link" href="/api/web" target="_blank">/api/web<span>随机 PC 图片（302）</span></a>
+      <a class="endpoint-link" href="/api/web?tag=anime" target="_blank">/api/web?tag=anime<span>按标签随机 PC 图（302）</span></a>
+      <a class="endpoint-link" href="/api/m" target="_blank">/api/m<span>随机手机图片（302）</span></a>
+      <a class="endpoint-link" href="/api/m?tag=anime" target="_blank">/api/m?tag=anime<span>按标签随机手机图（302）</span></a>
+    </section>
+
+    <section class="section endpoint-card">
+      <h2>JSON 接口</h2>
+      <a class="endpoint-link" href="/api/web/json" target="_blank">/api/web/json<span>返回静态图片 URL</span></a>
+      <a class="endpoint-link" href="/api/web/json?tag=anime" target="_blank">/api/web/json?tag=anime<span>按标签返回 PC 图 URL</span></a>
+      <a class="endpoint-link" href="/api/m/json" target="_blank">/api/m/json<span>返回静态图片 URL</span></a>
+      <a class="endpoint-link" href="/api/m/json?tag=anime" target="_blank">/api/m/json?tag=anime<span>按标签返回手机图 URL</span></a>
+    </section>
+
+    <section class="section stats home-stats">
+      <div class="stats-head">
+        <h2>使用统计</h2>
+        <div id="timeDisplay">北京时间：--:--:--</div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>接口</th><th>今日调用</th><th>总调用</th></tr>
+        </thead>
+        <tbody id="statsBody"></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script src="/public/common.js"></script>
 <script>
 const body = document.body;
 const refreshBtn = document.getElementById('refreshBtn');
-const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
-const apiPath = isMobile ? '/api/m' : '/api/web';
+const apiPath = window.AppCommon.detectApiPath();
 
-// 刷新背景
-async function refreshBackground() {
-    body.style.backgroundImage = `url(${apiPath}?t=${Date.now()})`;
+function refreshBackground() {
+  window.AppCommon.refreshBackground(body, apiPath);
 }
 refreshBackground();
 refreshBtn.addEventListener('click', refreshBackground);
 
-// key → 显示路径映射
 const keyMap = {
-    "redirect_web": "/api/web",
-    "redirect_m": "/api/m",
-    "json_web": "/api/web/json",
-    "json_m": "/api/m/json",
-    "upload": "/api/upload"
+  "redirect_web": "/api/web",
+  "redirect_m": "/api/m",
+  "json_web": "/api/web/json",
+  "json_m": "/api/m/json",
+  "upload": "/api/upload"
 };
 
-// 获取并显示统计
 async function loadStats() {
-    try {
-        const res = await fetch('/api/stats?t=' + Date.now());
-        const data = await res.json();
-        const tbody = document.getElementById('statsBody');
-        tbody.innerHTML = '';
-        for (const key in data) {
-            const path = keyMap[key] || key;
-            const row = `<tr>
-                <td>${path}</td>
-                <td>${data[key].today}</td>
-                <td>${data[key].total}</td>
-            </tr>`;
-            tbody.innerHTML += row;
-        }
-    } catch(err) {
-        console.error("获取统计失败", err);
-    }
+  const res = await fetch('/api/stats?t=' + Date.now());
+  if (!res.ok) {
+    throw new Error('HTTP ' + res.status);
+  }
+  const data = await res.json();
+  const tbody = document.getElementById('statsBody');
+
+  const rows = Object.keys(data).map((key) => {
+    const path = keyMap[key] || key;
+    return `<tr>
+      <td>${path}</td>
+      <td>${data[key].today}</td>
+      <td>${data[key].total}</td>
+    </tr>`;
+  }).join('');
+
+  tbody.innerHTML = rows;
 }
 
-// 定时刷新统计，每10秒更新
-loadStats();
-setInterval(loadStats, 10000);
+let statsTimer = null;
+let statsIntervalMs = 10000;
 
-// 显示北京时间
+function scheduleStats(nextMs = statsIntervalMs) {
+  if (statsTimer) {
+    clearTimeout(statsTimer);
+  }
+  statsTimer = setTimeout(async () => {
+    if (document.hidden) {
+      scheduleStats(30000);
+      return;
+    }
+    try {
+      await loadStats();
+      statsIntervalMs = 10000;
+      scheduleStats(statsIntervalMs);
+    } catch {
+      statsIntervalMs = Math.min(statsIntervalMs * 2, 60000);
+      scheduleStats(statsIntervalMs);
+    }
+  }, nextMs);
+}
+
+loadStats().catch(() => {});
+scheduleStats(10000);
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadStats().catch(() => {});
+    scheduleStats(10000);
+  }
+});
+
 function updateBeijingTime() {
-    const now = new Date();
-    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-    const beijing = new Date(utc + 8 * 3600000);
-    const h = String(beijing.getHours()).padStart(2,'0');
-    const m = String(beijing.getMinutes()).padStart(2,'0');
-    const s = String(beijing.getSeconds()).padStart(2,'0');
-    document.getElementById('timeDisplay').textContent = `北京时间：${h}:${m}:${s}`;
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const beijing = new Date(utc + 8 * 3600000);
+  const h = String(beijing.getHours()).padStart(2, '0');
+  const m = String(beijing.getMinutes()).padStart(2, '0');
+  const s = String(beijing.getSeconds()).padStart(2, '0');
+  document.getElementById('timeDisplay').textContent = `北京时间：${h}:${m}:${s}`;
 }
 updateBeijingTime();
 setInterval(updateBeijingTime, 1000);

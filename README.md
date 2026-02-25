@@ -1,53 +1,121 @@
 # One-picture-API
 
-基于 **Go 语言** 开发的轻量级随机图 API，支持 PC/手机不同接口、JSON 返回、图片上传、使用统计以及网页展示。无需数据库，直接存储图片文件，适合快速搭建个人或小型图片服务。
+基于 Go 的轻量随机图服务，支持：
+- PC / 手机随机图接口
+- 302 跳转静态资源（CDN 友好）
+- JSON 返回静态图片 URL
+- Token 登录后上传（会话鉴权）
+- 图片标签（tag）索引与按标签随机
+- 后台标签管理页面（查看图片、覆盖/追加标签）
+- 上传页拖拽选择 + 点击上传 + 可附加标签
+- 接口调用统计与定时落盘
 
 ---
 
-## 功能特点
+## 当前接口
 
-- **随机图片接口**
-  - `/api/web` → PC 端随机图片（直接跳转）
-  - `/api/m` → 手机端随机图片（直接跳转）
-  - `/api/web/json` → PC 图片 URL（JSON 返回）
-  - `/api/m/json` → 手机图片 URL（JSON 返回）
+### 随机图（302 跳转）
+- `/api/web`：随机 PC 图（302 到 `/images/...`）
+- `/api/m`：随机手机图（302 到 `/images/...`）
+- `/api/web?tag=anime`：按标签随机 PC 图
+- `/api/m?tag=anime`：按标签随机手机图
 
-- **上传图片**
-  - 页面 `/public/upload.html` 可上传图片
-  - 支持上传到 `/images/web`（PC）或 `/images/m`（手机）
-  - 上传需要 **token 鉴权**，token 配置在 `tokens.json`
+### JSON
+- `/api/web/json`：返回 PC 图静态 URL
+- `/api/m/json`：返回手机图静态 URL
+- `/api/web/json?tag=anime`：按标签返回 PC 图 URL
+- `/api/m/json?tag=anime`：按标签返回手机图 URL
 
-- **使用统计**
-  - 每个接口统计今日调用次数 + 总调用次数
-  - 统计数据存储在内存，并定期写入 `stats.json`
-  - 可通过 `/api/stats` 查看统计信息
+### 登录鉴权
+- `POST /api/login`：提交 token 登录，写入 HttpOnly 会话 Cookie
+- `POST /api/logout`：登出并清理会话
+- `GET /api/auth/status`：查看当前是否登录
 
-- **网页访问**
-  - 首页 `/` 跳转到 `/public/index.html`
-  - 首页展示随机背景壁纸（自动根据设备选择 PC 或手机接口）
-  - 首页显示接口列表 + 实时使用统计 + 北京时间
-  - 上传页面 `/public/upload.html` 可上传图片并显示上传结果
+### 上传（需登录）
+- `POST /api/upload`
+- 表单字段：
+  - `file`：图片文件
+  - `category`：`web` 或 `m`
+  - `tags`：可选，逗号分隔（如 `anime,girl,night`）
+- 说明：
+  - 不再通过表单 token 上传
+  - 必须先登录再上传
 
-- **安全**
-  - 静态文件使用安全处理，不暴露资源目录
-  - 上传接口需要 token
+### 标签管理（需登录）
+- `GET /api/admin/tags`：返回标签列表与图片数量
+- `GET /api/admin/images`：分页查询图片+标签
+  - 参数：`category`、`tag`、`page`、`pageSize`
+- `POST /api/admin/image/tags`：设置图片标签
+  - JSON：`{"path":"web/xxx.webp","tags":["anime"],"mode":"replace|append"}`
+
+### 统计
+- `GET /api/stats`
+- 统计驻留内存，定时写入 `stats.json`
 
 ---
 
-## 项目目录结构
-One-picture-API/
-├─ images/ # 图片存储目录
-│ ├─ web/ # PC 图片
-│ └─ m/ # 手机图片
-├─ public/ # 静态页面
-│ ├─ index.html # 首页
-│ └─ upload.html # 上传页面
-├─ tokens.json # 上传鉴权 token
-├─ stats.json # 使用统计数据（本地生成，可忽略上传）
-└─ main.go # Go 主程序
+## 静态资源与缓存
 
-运行方法
+- 页面：`/public/*`
+- 图片：`/images/*`
+- 图片响应包含缓存头：
+  - `Cache-Control: public, max-age=31536000, immutable`
 
-安装 Go 环境
-在项目目录下运行：go run main.go
-访问 http://localhost:8080
+这意味着随机接口可通过 302 指向静态图片，由 CDN 长缓存图片资源。
+
+---
+
+## 前端页面
+
+- `/public/index.html`：首页（接口入口 + 统计 + 背景刷新）
+- `/public/login.html`：Token 登录页
+- `/public/upload.html`：上传页（拖拽/点选文件，点击上传按钮提交，可附加标签）
+- `/public/admin.html`：后台标签管理页
+
+---
+
+## 目录结构
+
+```text
+One picture-API/
+├─ main.go
+├─ tokens.json
+├─ stats.json
+├─ tags_index.json
+├─ images/
+│  ├─ web/
+│  └─ m/
+└─ public/
+   ├─ index.html
+   ├─ login.html
+   ├─ upload.html
+   ├─ common.css
+   └─ common.js
+```
+
+---
+
+## 运行
+
+在项目目录执行：
+
+```bash
+go run main.go
+```
+
+启动后访问：
+- `http://localhost:8080`
+
+---
+
+## tokens.json 示例
+
+```json
+{
+  "tokens": [
+    "请替换为你的高强度token"
+  ]
+}
+```
+
+建议使用长度 >= 32 的随机字符串，并定期轮换。

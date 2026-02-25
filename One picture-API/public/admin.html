@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>标签管理</title>
+  <link rel="stylesheet" href="/public/common.css">
+</head>
+<body class="admin-page">
+
+<div class="container">
+  <div class="top-actions">
+    <button type="button" onclick="location.href='/public/index.html'">回首页</button>
+    <button type="button" onclick="location.href='/public/upload.html'">返回上传页</button>
+    <button type="button" id="logoutBtn">退出登录</button>
+  </div>
+
+  <h1>标签管理</h1>
+
+  <div class="section admin-controls">
+    <label>分类：
+      <select id="categorySelect">
+        <option value="">全部</option>
+        <option value="web">PC</option>
+        <option value="m">手机</option>
+      </select>
+    </label>
+    <label>按标签筛选：
+      <input id="tagFilter" type="text" placeholder="例如 anime">
+    </label>
+    <button id="queryBtn" type="button">查询图片</button>
+  </div>
+
+  <div class="section">
+    <h2>标签统计</h2>
+    <p class="muted-note">说明：给图片添加 <code>hidden</code> 标签后，该图片不会出现在默认随机池（不带 <code>tag</code> 参数的 <code>/api/web</code>、<code>/api/m</code>）中。</p>
+    <div id="tagSummary" class="mono-block">加载中...</div>
+  </div>
+
+  <div class="section">
+    <h2>图片列表</h2>
+    <div id="imageList" class="admin-list"></div>
+    <div class="admin-pagination" id="paginationBar">
+      <button id="prevPageBtn" type="button">上一页</button>
+      <span id="pageInfo">第 1 页</span>
+      <button id="nextPageBtn" type="button">下一页</button>
+      <label class="page-size-label">每页
+        <select id="pageSizeSelect">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="300">300</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<script src="/public/common.js"></script>
+<script>
+  const body = document.body;
+  const apiPath = window.AppCommon.detectApiPath();
+  const logoutBtn = document.getElementById('logoutBtn');
+  const queryBtn = document.getElementById('queryBtn');
+  const categorySelect = document.getElementById('categorySelect');
+  const tagFilter = document.getElementById('tagFilter');
+  const imageList = document.getElementById('imageList');
+  const result = document.getElementById('result');
+  const tagSummary = document.getElementById('tagSummary');
+  const prevPageBtn = document.getElementById('prevPageBtn');
+  const nextPageBtn = document.getElementById('nextPageBtn');
+  const pageInfo = document.getElementById('pageInfo');
+  const pageSizeSelect = document.getElementById('pageSizeSelect');
+
+  let currentPage = 1;
+  let pageSize = Number(pageSizeSelect.value) || 100;
+  let total = 0;
+
+  function refreshBackground() {
+    window.AppCommon.refreshBackground(body, apiPath);
+  }
+
+  function formatApiError(status, payload, fallbackText) {
+    if (payload && typeof payload === 'object') {
+      const message = payload.message || payload.error || `请求失败（${status}）`;
+      const detail = payload.detail ? `，详情：${payload.detail}` : '';
+      const code = payload.code ? ` [${payload.code}]` : '';
+      return `${message}${code}${detail}`;
+    }
+    return fallbackText ? `请求失败（${status}）：${fallbackText}` : `请求失败（${status}）`;
+  }
+
+  async function readApiResponse(res) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    let payload = null;
+    let text = '';
+
+    if (contentType.includes('application/json')) {
+      try {
+        payload = await res.json();
+      } catch (_) {}
+    } else {
+      text = await res.text();
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch (_) {}
+      }
+    }
+
+    if (!res.ok) {
+      throw new Error(formatApiError(res.status, payload, text));
+    }
+    return payload || {};
+  }
+
+  async function ensureLoggedIn() {
+    try {
+      const res = await fetch('/api/auth/status', { credentials: 'same-origin' });
+      const data = await readApiResponse(res);
+      if (!data.loggedIn) {
+        location.href = '/public/login.html';
+        return false;
+      }
+      return true;
+    } catch (_) {
+      location.href = '/public/login.html';
+      return false;
+    }
+  }
+
+  logoutBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch (_) {}
+    location.href = '/public/login.html';
+  });
+
+  function renderTagSummary(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      tagSummary.textContent = '暂无标签';
+      return;
+    }
+    tagSummary.textContent = items.map(x => `${x.tag} (${x.count})`).join('  |  ');
+  }
+
+  function renderPagination() {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (currentPage > totalPages) {
+      currentPage = totalPages;
+    }
+    pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页 · 共 ${total} 张`;
+    prevPageBtn.disabled = currentPage <= 1;
+    nextPageBtn.disabled = currentPage >= totalPages;
+  }
+
+  function makeItemRow(item) {
+    const row = document.createElement('div');
+    row.className = 'admin-item';
+
+    const previewWrap = document.createElement('div');
+    previewWrap.className = 'admin-preview';
+
+    const thumb = document.createElement('img');
+    thumb.className = 'admin-thumb';
+    thumb.loading = 'lazy';
+    thumb.src = '/images/' + item.path;
+    thumb.alt = item.path;
+
+    const pathWrap = document.createElement('div');
+    pathWrap.className = 'admin-meta';
+
+    const pathEl = document.createElement('div');
+    pathEl.className = 'admin-path';
+    pathEl.textContent = item.path;
+
+    const originalLink = document.createElement('a');
+    originalLink.className = 'admin-original-link';
+    originalLink.href = '/images/' + item.path;
+    originalLink.target = '_blank';
+    originalLink.rel = 'noopener';
+    originalLink.textContent = '查看原图';
+
+    pathWrap.appendChild(pathEl);
+    pathWrap.appendChild(originalLink);
+    previewWrap.appendChild(thumb);
+    previewWrap.appendChild(pathWrap);
+
+    const tagsEl = document.createElement('input');
+    tagsEl.type = 'text';
+    tagsEl.value = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+    tagsEl.placeholder = '输入标签，逗号分隔';
+
+    const replaceBtn = document.createElement('button');
+    replaceBtn.type = 'button';
+    replaceBtn.textContent = '覆盖标签';
+
+    const appendBtn = document.createElement('button');
+    appendBtn.type = 'button';
+    appendBtn.textContent = '追加标签';
+
+    async function submit(mode) {
+      try {
+        const raw = tagsEl.value || '';
+        const tags = raw.split(/[，,;；\s]+/).map(s => s.trim()).filter(Boolean);
+        const res = await fetch('/api/admin/image/tags', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: item.path, tags, mode })
+        });
+
+        const json = await readApiResponse(res);
+        tagsEl.value = (json.tags || []).join(', ');
+        result.textContent = `已更新: ${json.path}`;
+        await loadTagSummary();
+      } catch (err) {
+        result.textContent = '保存失败: ' + (err && err.message ? err.message : err);
+      }
+    }
+
+    replaceBtn.addEventListener('click', () => submit('replace'));
+    appendBtn.addEventListener('click', () => submit('append'));
+
+    const actionWrap = document.createElement('div');
+    actionWrap.className = 'admin-actions';
+    actionWrap.appendChild(replaceBtn);
+    actionWrap.appendChild(appendBtn);
+
+    row.appendChild(previewWrap);
+    row.appendChild(tagsEl);
+    row.appendChild(actionWrap);
+    return row;
+  }
+
+  async function loadTagSummary() {
+    try {
+      const res = await fetch('/api/admin/tags', { credentials: 'same-origin' });
+      const json = await readApiResponse(res);
+      renderTagSummary(json.items || []);
+    } catch (err) {
+      tagSummary.textContent = '加载失败: ' + (err && err.message ? err.message : err);
+    }
+  }
+
+  async function loadImages(resetPage = false) {
+    if (resetPage) {
+      currentPage = 1;
+    }
+
+    const params = new URLSearchParams();
+    if (categorySelect.value) params.set('category', categorySelect.value);
+    if (tagFilter.value.trim()) params.set('tag', tagFilter.value.trim());
+    params.set('page', String(currentPage));
+    params.set('pageSize', String(pageSize));
+
+    try {
+      const res = await fetch('/api/admin/images?' + params.toString(), { credentials: 'same-origin' });
+      const json = await readApiResponse(res);
+
+      const items = Array.isArray(json.items) ? json.items : [];
+      total = Number(json.total) || 0;
+      currentPage = Number(json.page) || currentPage;
+      pageSize = Number(json.pageSize) || pageSize;
+      pageSizeSelect.value = String(pageSize);
+
+      imageList.innerHTML = '';
+      if (items.length === 0) {
+        imageList.textContent = '没有匹配图片';
+      } else {
+        items.forEach(item => imageList.appendChild(makeItemRow(item)));
+      }
+      renderPagination();
+    } catch (err) {
+      imageList.textContent = '加载失败: ' + (err && err.message ? err.message : err);
+      total = 0;
+      renderPagination();
+    }
+  }
+
+  queryBtn.addEventListener('click', () => {
+    loadImages(true);
+  });
+
+  tagFilter.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      loadImages(true);
+    }
+  });
+
+  prevPageBtn.addEventListener('click', () => {
+    if (currentPage <= 1) return;
+    currentPage -= 1;
+    loadImages(false);
+  });
+
+  nextPageBtn.addEventListener('click', () => {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (currentPage >= totalPages) return;
+    currentPage += 1;
+    loadImages(false);
+  });
+
+  pageSizeSelect.addEventListener('change', () => {
+    pageSize = Number(pageSizeSelect.value) || 100;
+    loadImages(true);
+  });
+
+  (async () => {
+    const ok = await ensureLoggedIn();
+    if (!ok) return;
+    refreshBackground();
+    renderPagination();
+    await loadTagSummary();
+    await loadImages(true);
+  })();
+</script>
+
+</body>
+</html>
