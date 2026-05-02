@@ -2,3 +2,7 @@
 One picture-API/*.exe
 One picture-API/*.out
 One picture-API/*.test
+
+# Local secrets and runtime state
+One picture-API/tokens.json
+One picture-API/stats.json

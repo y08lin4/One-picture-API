@@ -23,10 +23,12 @@ const (
 
 type TagIndex struct {
 	mu               sync.RWMutex
+	saveMu           sync.Mutex
 	imageTags        map[string][]string
 	tagImages        map[string]map[string]struct{}
 	defaultPoolCache map[string][]string
 	dirty            bool
+	version          uint64
 }
 
 type tagIndexFile struct {
@@ -81,11 +83,15 @@ func (ti *TagIndex) LoadFromFile(filename string) error {
 	ti.rebuildTagImagesLocked()
 	ti.defaultPoolCache = make(map[string][]string)
 	ti.dirty = false
+	ti.version = 0
 	ti.mu.Unlock()
 	return nil
 }
 
 func (ti *TagIndex) SaveToFile(filename string) error {
+	ti.saveMu.Lock()
+	defer ti.saveMu.Unlock()
+
 	ti.mu.RLock()
 	copyMap := make(map[string][]string, len(ti.imageTags))
 	for k, v := range ti.imageTags {
@@ -93,40 +99,45 @@ func (ti *TagIndex) SaveToFile(filename string) error {
 		copy(tmp, v)
 		copyMap[k] = tmp
 	}
+	version := ti.version
 	ti.mu.RUnlock()
 
 	data, err := json.MarshalIndent(tagIndexFile{ImageTags: copyMap}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmpFile := filename + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+	if err := writeFileAtomic(filename, data, 0644); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpFile, filename); err != nil {
-		_ = os.Remove(filename)
-		if err2 := os.Rename(tmpFile, filename); err2 != nil {
-			_ = os.Remove(tmpFile)
-			return err2
-		}
-	}
+
 	ti.mu.Lock()
-	ti.dirty = false
+	if ti.version == version {
+		ti.dirty = false
+	}
 	ti.mu.Unlock()
 	return nil
 }
 
+func (ti *TagIndex) markDirtyLocked() {
+	ti.version++
+	ti.dirty = true
+}
+
 func (ti *TagIndex) PruneMissing(baseDir string) {
 	ti.mu.Lock()
+	changed := false
 	for rel := range ti.imageTags {
 		abs := filepath.Join(baseDir, filepath.FromSlash(rel))
 		if info, err := os.Stat(abs); err != nil || info.IsDir() {
 			delete(ti.imageTags, rel)
+			changed = true
 		}
 	}
-	ti.rebuildTagImagesLocked()
-	ti.defaultPoolCache = make(map[string][]string)
-	ti.dirty = true
+	if changed {
+		ti.rebuildTagImagesLocked()
+		ti.defaultPoolCache = make(map[string][]string)
+		ti.markDirtyLocked()
+	}
 	ti.mu.Unlock()
 }
 
@@ -145,7 +156,7 @@ func (ti *TagIndex) ReplaceTags(rel string, tags []string) {
 	}
 	ti.rebuildTagImagesLocked()
 	ti.defaultPoolCache = make(map[string][]string)
-	ti.dirty = true
+	ti.markDirtyLocked()
 	ti.mu.Unlock()
 }
 
@@ -178,7 +189,7 @@ func (ti *TagIndex) AddTags(rel string, tags []string) {
 	ti.imageTags[normRel] = arr
 	ti.rebuildTagImagesLocked()
 	ti.defaultPoolCache = make(map[string][]string)
-	ti.dirty = true
+	ti.markDirtyLocked()
 	ti.mu.Unlock()
 }
 
@@ -332,7 +343,6 @@ func normalizeRelImagePath(raw string) (string, bool) {
 func (ti *TagIndex) InvalidateDefaultPoolCache() {
 	ti.mu.Lock()
 	ti.defaultPoolCache = make(map[string][]string)
-	ti.dirty = true
 	ti.mu.Unlock()
 }
 
@@ -342,7 +352,7 @@ func (ti *TagIndex) IsDirty() bool {
 	return ti.dirty
 }
 
-func (ti *TagIndex) getOrBuildDefaultPool(folder string, pool *ImagePool, excludeTag string) []string {
+func (ti *TagIndex) getOrBuildDefaultPool(folder, imageBaseDir string, pool *ImagePool, excludeTag string) []string {
 	ti.mu.RLock()
 	cached, ok := ti.defaultPoolCache[folder]
 	if ok {
@@ -359,7 +369,7 @@ func (ti *TagIndex) getOrBuildDefaultPool(folder string, pool *ImagePool, exclud
 	}
 	candidates := make([]string, 0, len(files))
 	for _, full := range files {
-		rel, err := filepath.Rel("images", full)
+		rel, err := filepath.Rel(imageBaseDir, full)
 		if err != nil {
 			continue
 		}
@@ -382,16 +392,16 @@ func (ti *TagIndex) getOrBuildDefaultPool(folder string, pool *ImagePool, exclud
 	return candidates
 }
 
-func pickTaggedImage(folder, tag string, ti *TagIndex) (string, error) {
+func pickTaggedImage(imageBaseDir, category, tag string, ti *TagIndex) (string, error) {
 	normTag := normalizeTag(tag)
 	if normTag == "" {
 		return "", errors.New("empty tag")
 	}
-	folderPrefix := strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(folder, "images")), "/") + "/"
+	folderPrefix := strings.TrimPrefix(filepath.ToSlash(category), "/") + "/"
 	candidates := make([]string, 0)
 	for _, rel := range ti.GetImagesByTag(normTag) {
 		if strings.HasPrefix(rel, folderPrefix) {
-			full := filepath.Join("images", filepath.FromSlash(rel))
+			full := filepath.Join(imageBaseDir, filepath.FromSlash(rel))
 			if info, err := os.Stat(full); err == nil && !info.IsDir() {
 				candidates = append(candidates, full)
 			}
@@ -403,15 +413,15 @@ func pickTaggedImage(folder, tag string, ti *TagIndex) (string, error) {
 	return candidates[rand.Intn(len(candidates))], nil
 }
 
-func pickRandomFromPoolExcludingTag(folder, excludeTag string, pool *ImagePool, ti *TagIndex) (string, error) {
-	candidates := ti.getOrBuildDefaultPool(folder, pool, excludeTag)
+func pickRandomFromPoolExcludingTag(folder, imageBaseDir, excludeTag string, pool *ImagePool, ti *TagIndex) (string, error) {
+	candidates := ti.getOrBuildDefaultPool(folder, imageBaseDir, pool, excludeTag)
 	if len(candidates) == 0 {
 		return "", errors.New("no images")
 	}
 	return candidates[rand.Intn(len(candidates))], nil
 }
 
-func randomImageJSONWithTagHandler(folder, key string, counter *Counter, pool *ImagePool, ti *TagIndex) http.HandlerFunc {
+func randomImageJSONWithTagHandler(folder, category, imageBaseDir, key string, counter *Counter, pool *ImagePool, ti *TagIndex) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tag := r.URL.Query().Get("tag")
 		var (
@@ -419,15 +429,15 @@ func randomImageJSONWithTagHandler(folder, key string, counter *Counter, pool *I
 			err  error
 		)
 		if normalizeTag(tag) == "" {
-			file, err = pickRandomFromPoolExcludingTag(folder, hiddenPoolTag, pool, ti)
+			file, err = pickRandomFromPoolExcludingTag(folder, imageBaseDir, hiddenPoolTag, pool, ti)
 		} else {
-			file, err = pickTaggedImage(folder, tag, ti)
+			file, err = pickTaggedImage(imageBaseDir, category, tag, ti)
 		}
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "NO_IMAGES", "没有可用图片", err.Error())
 			return
 		}
-		rel, err := filepath.Rel("images", file)
+		rel, err := filepath.Rel(imageBaseDir, file)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
 			return
@@ -445,7 +455,7 @@ func randomImageJSONWithTagHandler(folder, key string, counter *Counter, pool *I
 	}
 }
 
-func randomImageRedirectWithTagHandler(folder, key string, counter *Counter, pool *ImagePool, ti *TagIndex) http.HandlerFunc {
+func randomImageRedirectWithTagHandler(folder, category, imageBaseDir, key string, counter *Counter, pool *ImagePool, ti *TagIndex) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tag := r.URL.Query().Get("tag")
 		var (
@@ -453,15 +463,15 @@ func randomImageRedirectWithTagHandler(folder, key string, counter *Counter, poo
 			err  error
 		)
 		if normalizeTag(tag) == "" {
-			file, err = pickRandomFromPoolExcludingTag(folder, hiddenPoolTag, pool, ti)
+			file, err = pickRandomFromPoolExcludingTag(folder, imageBaseDir, hiddenPoolTag, pool, ti)
 		} else {
-			file, err = pickTaggedImage(folder, tag, ti)
+			file, err = pickTaggedImage(imageBaseDir, category, tag, ti)
 		}
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "NO_IMAGES", "没有可用图片", err.Error())
 			return
 		}
-		rel, err := filepath.Rel("images", file)
+		rel, err := filepath.Rel(imageBaseDir, file)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
 			return
@@ -488,7 +498,7 @@ func adminTagsHandler(sm *SessionManager, ti *TagIndex) http.HandlerFunc {
 	}
 }
 
-func adminImagesHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex) http.HandlerFunc {
+func adminImagesHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex, imageBaseDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect GET")
@@ -525,16 +535,16 @@ func adminImagesHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex) http.
 			}
 		} else {
 			if category == "" || category == "web" {
-				for _, f := range pool.ListFiles("images/web") {
-					rel, err := filepath.Rel("images", f)
+				for _, f := range pool.ListFiles(categoryFolder(imageBaseDir, "web")) {
+					rel, err := filepath.Rel(imageBaseDir, f)
 					if err == nil {
 						collect = append(collect, filepath.ToSlash(rel))
 					}
 				}
 			}
 			if category == "" || category == "m" {
-				for _, f := range pool.ListFiles("images/m") {
-					rel, err := filepath.Rel("images", f)
+				for _, f := range pool.ListFiles(categoryFolder(imageBaseDir, "m")) {
+					rel, err := filepath.Rel(imageBaseDir, f)
 					if err == nil {
 						collect = append(collect, filepath.ToSlash(rel))
 					}
@@ -570,7 +580,7 @@ func adminImagesHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex) http.
 	}
 }
 
-func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex) http.HandlerFunc {
+func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir string) http.HandlerFunc {
 	type reqBody struct {
 		Path string   `json:"path"`
 		Tags []string `json:"tags"`
@@ -596,7 +606,7 @@ func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex) http.HandlerFunc
 			writeAPIError(w, http.StatusBadRequest, "INVALID_PATH", "图片路径无效", req.Path)
 			return
 		}
-		if info, err := os.Stat(filepath.Join("images", filepath.FromSlash(rel))); err != nil || info.IsDir() {
+		if info, err := os.Stat(filepath.Join(imageBaseDir, filepath.FromSlash(rel))); err != nil || info.IsDir() {
 			writeAPIError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "图片不存在", rel)
 			return
 		}

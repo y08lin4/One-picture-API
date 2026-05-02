@@ -43,6 +43,35 @@ var (
 	}
 )
 
+func isAllowedImageExt(name string) bool {
+	return allowedImageExt[strings.ToLower(filepath.Ext(name))]
+}
+
+func normalizeDetectedMIME(mime string) string {
+	mime = strings.ToLower(mime)
+	if idx := strings.Index(mime, ";"); idx > 0 {
+		mime = mime[:idx]
+	}
+	return mime
+}
+
+func detectAllowedImageFile(filename string) bool {
+	if !isAllowedImageExt(filename) {
+		return false
+	}
+
+	f, err := os.Open(filename)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	mime := normalizeDetectedMIME(http.DetectContentType(head[:n]))
+	return allowedImageMIME[mime]
+}
+
 // ---------------- 图片缓存池 ----------------
 type ImagePool struct {
 	mu    sync.RWMutex
@@ -70,6 +99,10 @@ func (p *ImagePool) Refresh(folder string) error {
 		if statErr != nil || info.IsDir() {
 			continue
 		}
+		if !detectAllowedImageFile(path) {
+			log.Printf("跳过非图片文件: %s", path)
+			continue
+		}
 		list = append(list, path)
 	}
 
@@ -90,6 +123,9 @@ func (p *ImagePool) RandomFile(folder string) (string, error) {
 }
 
 func (p *ImagePool) AddFile(folder, file string) {
+	if !detectAllowedImageFile(file) {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	list := p.files[folder]
@@ -177,7 +213,7 @@ func getSessionID(r *http.Request) string {
 	return cookie.Value
 }
 
-func clearSessionCookie(w http.ResponseWriter) {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -185,6 +221,7 @@ func clearSessionCookie(w http.ResponseWriter) {
 		HttpOnly: true,
 		MaxAge:   -1,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
 	})
 }
 
@@ -249,27 +286,54 @@ func safeFileServer(prefix, folder string) http.Handler {
 }
 
 // ---------------- Token 登录 ----------------
-func loadTokens(filename string) (map[string]bool, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	var obj struct {
-		Tokens []string `json:"tokens"`
-	}
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return nil, err
-	}
-	tmap := make(map[string]bool)
-	for _, t := range obj.Tokens {
+func addTokens(tmap map[string]bool, tokens []string) {
+	for _, t := range tokens {
 		if trimmed := strings.TrimSpace(t); trimmed != "" {
 			tmap[trimmed] = true
 		}
 	}
+}
+
+func splitTokenList(raw string) []string {
+	return strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '\n', '\r', '\t', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func loadTokens(filename, envTokens string) (map[string]bool, error) {
+	tmap := make(map[string]bool)
+
+	var obj struct {
+		Tokens []string `json:"tokens"`
+	}
+
+	if strings.TrimSpace(filename) != "" {
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) || strings.TrimSpace(envTokens) == "" {
+				return nil, err
+			}
+		} else if len(strings.TrimSpace(string(data))) > 0 {
+			if err := json.Unmarshal(data, &obj); err != nil {
+				return nil, err
+			}
+			addTokens(tmap, obj.Tokens)
+		}
+	}
+
+	addTokens(tmap, splitTokenList(envTokens))
+	if len(tmap) == 0 {
+		return nil, errors.New("no login tokens configured; set OPAPI_TOKENS or create tokens.json from tokens.example.json")
+	}
 	return tmap, nil
 }
 
-func loginHandler(tokens map[string]bool, sm *SessionManager) http.HandlerFunc {
+func loginHandler(tokens map[string]bool, sm *SessionManager, cookieSecure bool) http.HandlerFunc {
 	type loginReq struct {
 		Token string `json:"token"`
 	}
@@ -309,13 +373,14 @@ func loginHandler(tokens map[string]bool, sm *SessionManager) http.HandlerFunc {
 			HttpOnly: true,
 			MaxAge:   int(sessionTTL.Seconds()),
 			SameSite: http.SameSiteLaxMode,
+			Secure:   cookieSecure,
 		})
 
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "loggedIn": true})
 	}
 }
 
-func logoutHandler(sm *SessionManager) http.HandlerFunc {
+func logoutHandler(sm *SessionManager, cookieSecure bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
@@ -325,7 +390,7 @@ func logoutHandler(sm *SessionManager) http.HandlerFunc {
 		if sid != "" {
 			sm.Delete(sid)
 		}
-		clearSessionCookie(w)
+		clearSessionCookie(w, cookieSecure)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "loggedIn": false})
 	}
 }
@@ -338,7 +403,7 @@ func authStatusHandler(sm *SessionManager) http.HandlerFunc {
 }
 
 // ---------------- 上传 ----------------
-func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *TagIndex) http.HandlerFunc {
+func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *TagIndex, imageBaseDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
@@ -358,7 +423,7 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 		if category != "m" {
 			category = "web"
 		}
-		dir := filepath.Join("images", category)
+		dir := categoryFolder(imageBaseDir, category)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			log.Println("创建上传目录失败:", err)
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
@@ -378,9 +443,8 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 			return
 		}
 
-		ext := strings.ToLower(filepath.Ext(safeName))
-		if !allowedImageExt[ext] {
-			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_EXTENSION", "文件扩展名不支持", ext)
+		if !isAllowedImageExt(safeName) {
+			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_EXTENSION", "文件扩展名不支持", filepath.Ext(safeName))
 			return
 		}
 
@@ -390,10 +454,7 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
 			return
 		}
-		mime := strings.ToLower(http.DetectContentType(head[:n]))
-		if idx := strings.Index(mime, ";"); idx > 0 {
-			mime = mime[:idx]
-		}
+		mime := normalizeDetectedMIME(http.DetectContentType(head[:n]))
 		if !allowedImageMIME[mime] {
 			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_FILE_TYPE", "文件类型不支持", mime)
 			return
@@ -432,7 +493,7 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 			return
 		}
 
-		rel, err := filepath.Rel("images", dstPath)
+		rel, err := filepath.Rel(imageBaseDir, dstPath)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
 			return
@@ -447,7 +508,7 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 		pool.AddFile(dir, dstPath)
 		tags.InvalidateDefaultPoolCache()
 
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "path": dstPath, "tags": tagList})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "path": rel, "url": "/images/" + rel, "tags": tagList})
 	}
 }
 
@@ -458,8 +519,9 @@ type StatItem struct {
 }
 
 type Counter struct {
-	mu    sync.RWMutex
-	stats map[string]*StatItem
+	mu     sync.RWMutex
+	saveMu sync.Mutex
+	stats  map[string]*StatItem
 }
 
 func NewCounter() *Counter {
@@ -495,27 +557,73 @@ func (c *Counter) ResetToday() {
 }
 
 func (c *Counter) SaveToFile(filename string) error {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+
 	data, err := json.MarshalIndent(c.GetStats(), "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filename, data, 0644)
+	return writeFileAtomic(filename, data, 0644)
+}
+
+func (c *Counter) LoadFromFile(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
+
+	var disk map[string]StatItem
+	if err := json.Unmarshal(data, &disk); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range disk {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		if v.Today < 0 {
+			v.Today = 0
+		}
+		if v.Total < 0 {
+			v.Total = 0
+		}
+		c.stats[key] = &StatItem{Today: v.Today, Total: v.Total}
+	}
+	return nil
 }
 
 // ---------------- main ----------------
 func main() {
 	rand.Seed(time.Now().UnixNano())
+	cfg := LoadConfig()
+
 	counter := NewCounter()
-	pool := NewImagePool("images/web", "images/m")
-	tags := NewTagIndex()
-	if err := tags.LoadFromFile(tagIndexFilename); err != nil {
-		log.Printf("加载 %s 失败: %v", tagIndexFilename, err)
+	if err := counter.LoadFromFile(cfg.StatsFile); err != nil {
+		log.Printf("加载 %s 失败: %v", cfg.StatsFile, err)
 	}
-	tags.PruneMissing("images")
+
+	webFolder := categoryFolder(cfg.ImageBaseDir, "web")
+	mobileFolder := categoryFolder(cfg.ImageBaseDir, "m")
+	pool := NewImagePool(webFolder, mobileFolder)
+	tags := NewTagIndex()
+	if err := tags.LoadFromFile(cfg.TagsFile); err != nil {
+		log.Printf("加载 %s 失败: %v", cfg.TagsFile, err)
+	}
+	tags.PruneMissing(cfg.ImageBaseDir)
 	sessions := NewSessionManager()
-	tokens, err := loadTokens("tokens.json")
+	tokens, err := loadTokens(cfg.TokensFile, os.Getenv("OPAPI_TOKENS"))
 	if err != nil {
-		log.Fatalf("加载 tokens.json 失败: %v", err)
+		log.Fatalf("加载登录 token 失败: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -528,31 +636,31 @@ func main() {
 		http.Redirect(w, r, "/public/index.html", http.StatusFound)
 	})
 
-	mux.HandleFunc("/api/web", randomImageRedirectWithTagHandler("images/web", "redirect_web", counter, pool, tags))
-	mux.HandleFunc("/api/m", randomImageRedirectWithTagHandler("images/m", "redirect_m", counter, pool, tags))
-	mux.HandleFunc("/api/web/json", randomImageJSONWithTagHandler("images/web", "json_web", counter, pool, tags))
-	mux.HandleFunc("/api/m/json", randomImageJSONWithTagHandler("images/m", "json_m", counter, pool, tags))
+	mux.HandleFunc("/api/web", randomImageRedirectWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "redirect_web", counter, pool, tags))
+	mux.HandleFunc("/api/m", randomImageRedirectWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "redirect_m", counter, pool, tags))
+	mux.HandleFunc("/api/web/json", randomImageJSONWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "json_web", counter, pool, tags))
+	mux.HandleFunc("/api/m/json", randomImageJSONWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "json_m", counter, pool, tags))
 
-	mux.HandleFunc("/api/login", loginHandler(tokens, sessions))
-	mux.HandleFunc("/api/logout", logoutHandler(sessions))
+	mux.HandleFunc("/api/login", loginHandler(tokens, sessions, cfg.CookieSecure))
+	mux.HandleFunc("/api/logout", logoutHandler(sessions, cfg.CookieSecure))
 	mux.HandleFunc("/api/auth/status", authStatusHandler(sessions))
-	mux.HandleFunc("/api/upload", uploadHandler(counter, pool, sessions, tags))
+	mux.HandleFunc("/api/upload", uploadHandler(counter, pool, sessions, tags, cfg.ImageBaseDir))
 	mux.HandleFunc("/api/admin/tags", adminTagsHandler(sessions, tags))
-	mux.HandleFunc("/api/admin/images", adminImagesHandler(sessions, pool, tags))
-	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags))
+	mux.HandleFunc("/api/admin/images", adminImagesHandler(sessions, pool, tags, cfg.ImageBaseDir))
+	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags, cfg.ImageBaseDir))
 
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, counter.GetStats())
 	})
 
-	mux.Handle("/public/", safeFileServer("/public/", "public"))
-	imageStaticHandler := safeFileServer("/images/", "images")
+	mux.Handle("/public/", safeFileServer("/public/", cfg.PublicDir))
+	imageStaticHandler := safeFileServer("/images/", cfg.ImageBaseDir)
 	mux.Handle("/images/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		imageStaticHandler.ServeHTTP(w, r)
 	}))
 
-	server := &http.Server{Addr: ":8080", Handler: mux}
+	server := &http.Server{Addr: cfg.Addr, Handler: mux}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
@@ -560,8 +668,8 @@ func main() {
 		ticker := time.NewTicker(statsFlushInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := counter.SaveToFile("stats.json"); err != nil {
-				log.Println("写入 stats.json 失败:", err)
+			if err := counter.SaveToFile(cfg.StatsFile); err != nil {
+				log.Printf("写入 %s 失败: %v", cfg.StatsFile, err)
 			}
 		}
 	}()
@@ -573,8 +681,8 @@ func main() {
 			if !tags.IsDirty() {
 				continue
 			}
-			if err := tags.SaveToFile(tagIndexFilename); err != nil {
-				log.Printf("写入 %s 失败: %v", tagIndexFilename, err)
+			if err := tags.SaveToFile(cfg.TagsFile); err != nil {
+				log.Printf("写入 %s 失败: %v", cfg.TagsFile, err)
 			}
 		}
 	}()
@@ -593,8 +701,8 @@ func main() {
 			next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC).Add(-8 * time.Hour)
 			time.Sleep(time.Until(next))
 			counter.ResetToday()
-			if err := counter.SaveToFile("stats.json"); err != nil {
-				log.Println("重置后写入 stats.json 失败:", err)
+			if err := counter.SaveToFile(cfg.StatsFile); err != nil {
+				log.Printf("重置后写入 %s 失败: %v", cfg.StatsFile, err)
 			}
 			log.Println("今日统计已重置")
 		}
@@ -603,11 +711,11 @@ func main() {
 	go func() {
 		<-stop
 		log.Println("收到退出信号，正在保存统计并关闭服务...")
-		if err := counter.SaveToFile("stats.json"); err != nil {
-			log.Println("退出前写入 stats.json 失败:", err)
+		if err := counter.SaveToFile(cfg.StatsFile); err != nil {
+			log.Printf("退出前写入 %s 失败: %v", cfg.StatsFile, err)
 		}
-		if err := tags.SaveToFile(tagIndexFilename); err != nil {
-			log.Printf("退出前写入 %s 失败: %v", tagIndexFilename, err)
+		if err := tags.SaveToFile(cfg.TagsFile); err != nil {
+			log.Printf("退出前写入 %s 失败: %v", cfg.TagsFile, err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -616,7 +724,7 @@ func main() {
 		}
 	}()
 
-	log.Println("Server started at http://localhost:8080")
+	log.Printf("Server started at %s", displayListenAddr(cfg.Addr))
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("服务启动失败: %v", err)
 	}

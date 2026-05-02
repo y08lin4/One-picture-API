@@ -78,8 +78,10 @@
 
 ```text
 One picture-API/
+├─ config.go
 ├─ main.go
 ├─ tokens.json
+├─ tokens.example.json
 ├─ stats.json
 ├─ tags_index.json
 ├─ images/
@@ -95,12 +97,28 @@ One picture-API/
 
 ---
 
+## 首次配置
+
+不要把真实登录 Token 提交到仓库。首次运行前二选一：
+
+```bash
+cp tokens.example.json tokens.json
+```
+
+然后编辑 `tokens.json`，把示例值替换为长度 >= 32 的随机字符串；或者直接通过环境变量提供：
+
+```bash
+OPAPI_TOKENS="your-random-token" go run .
+```
+
+---
+
 ## 运行
 
 在项目目录执行：
 
 ```bash
-go run main.go
+go run .
 ```
 
 启动后访问：
@@ -119,3 +137,18 @@ go run main.go
 ```
 
 建议使用长度 >= 32 的随机字符串，并定期轮换。
+
+---
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `OPAPI_ADDR` | `:8080` | 监听地址 |
+| `OPAPI_IMAGES_DIR` | `images` | 图片根目录，下面需要有 `web/` 和 `m/` |
+| `OPAPI_PUBLIC_DIR` | `public` | 前端静态页面目录 |
+| `OPAPI_TOKENS_FILE` | `tokens.json` | 登录 Token 文件路径 |
+| `OPAPI_TOKENS` | 空 | 额外登录 Token，支持逗号、分号、空白分隔 |
+| `OPAPI_STATS_FILE` | `stats.json` | 统计文件路径，启动时会读取，运行中会定时落盘 |
+| `OPAPI_TAGS_FILE` | `tags_index.json` | 标签索引文件路径 |
+| `OPAPI_COOKIE_SECURE` | `false` | HTTPS 部署时建议设为 `true` |
