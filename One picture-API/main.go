@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,6 +41,18 @@ var (
 		"image/png":  true,
 		"image/webp": true,
 		"image/gif":  true,
+	}
+	mimeCanonicalExt = map[string]string{
+		"image/jpeg": ".jpg",
+		"image/png":  ".png",
+		"image/webp": ".webp",
+		"image/gif":  ".gif",
+	}
+	mimeAllowedExt = map[string]map[string]bool{
+		"image/jpeg": {".jpg": true, ".jpeg": true},
+		"image/png":  {".png": true},
+		"image/webp": {".webp": true},
+		"image/gif":  {".gif": true},
 	}
 )
 
@@ -69,7 +82,51 @@ func detectAllowedImageFile(filename string) bool {
 	head := make([]byte, 512)
 	n, _ := f.Read(head)
 	mime := normalizeDetectedMIME(http.DetectContentType(head[:n]))
-	return allowedImageMIME[mime]
+	return extMatchesMIME(filepath.Ext(filename), mime)
+}
+
+func extMatchesMIME(ext, mime string) bool {
+	ext = strings.ToLower(ext)
+	allowed := mimeAllowedExt[mime]
+	return allowed != nil && allowed[ext]
+}
+
+func randomHex(bytesLen int) (string, error) {
+	buf := make([]byte, bytesLen)
+	if _, err := crand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func newImageFilename(ext string) (string, error) {
+	token, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	return time.Now().UTC().Format("20060102T150405Z") + "-" + token + ext, nil
+}
+
+func directorySize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return total, err
 }
 
 // ---------------- 图片缓存池 ----------------
@@ -254,7 +311,7 @@ func requireLogin(sm *SessionManager, w http.ResponseWriter, r *http.Request) bo
 }
 
 // ---------------- 安全静态文件 ----------------
-func safeFileServer(prefix, folder string) http.Handler {
+func safeFileServer(prefix, folder string, allow func(string, os.FileInfo) bool) http.Handler {
 	return http.StripPrefix(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		relPath := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
 		fullPath := filepath.Join(folder, relPath)
@@ -281,15 +338,51 @@ func safeFileServer(prefix, folder string) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+
+		fileReal, err := filepath.EvalSymlinks(fileAbs)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		baseReal, err := filepath.EvalSymlinks(baseAbs)
+		if err != nil {
+			http.Error(w, "Server Error", http.StatusInternalServerError)
+			return
+		}
+		realAllowedPrefix := baseReal + string(os.PathSeparator)
+		if fileReal != baseReal && !strings.HasPrefix(fileReal, realAllowedPrefix) {
+			http.NotFound(w, r)
+			return
+		}
+		if fileReal != fileAbs {
+			fileAbs = fileReal
+			info, err = os.Stat(fileAbs)
+			if err != nil || info.IsDir() {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		if allow != nil && !allow(fileAbs, info) {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, fileAbs)
 	}))
 }
 
+func allowAnyFile(_ string, _ os.FileInfo) bool {
+	return true
+}
+
+func allowImageFile(path string, _ os.FileInfo) bool {
+	return detectAllowedImageFile(path)
+}
+
 // ---------------- Token 登录 ----------------
-func addTokens(tmap map[string]bool, tokens []string) {
+func addTokens(dst *[]string, tokens []string) {
 	for _, t := range tokens {
 		if trimmed := strings.TrimSpace(t); trimmed != "" {
-			tmap[trimmed] = true
+			*dst = append(*dst, trimmed)
 		}
 	}
 }
@@ -305,8 +398,8 @@ func splitTokenList(raw string) []string {
 	})
 }
 
-func loadTokens(filename, envTokens string) (map[string]bool, error) {
-	tmap := make(map[string]bool)
+func loadTokens(filename, envTokens string) (*TokenStore, error) {
+	allTokens := make([]string, 0)
 
 	var obj struct {
 		Tokens []string `json:"tokens"`
@@ -322,18 +415,19 @@ func loadTokens(filename, envTokens string) (map[string]bool, error) {
 			if err := json.Unmarshal(data, &obj); err != nil {
 				return nil, err
 			}
-			addTokens(tmap, obj.Tokens)
+			addTokens(&allTokens, obj.Tokens)
 		}
 	}
 
-	addTokens(tmap, splitTokenList(envTokens))
-	if len(tmap) == 0 {
+	addTokens(&allTokens, splitTokenList(envTokens))
+	store := NewTokenStore(allTokens)
+	if store.Len() == 0 {
 		return nil, errors.New("no login tokens configured; set OPAPI_TOKENS or create tokens.json from tokens.example.json")
 	}
-	return tmap, nil
+	return store, nil
 }
 
-func loginHandler(tokens map[string]bool, sm *SessionManager, cookieSecure bool) http.HandlerFunc {
+func loginHandler(tokens *TokenStore, sm *SessionManager, cookieSecure bool, limiter *LoginRateLimiter, trustedOrigins []string, trustProxy bool) http.HandlerFunc {
 	type loginReq struct {
 		Token string `json:"token"`
 	}
@@ -342,10 +436,21 @@ func loginHandler(tokens map[string]bool, sm *SessionManager, cookieSecure bool)
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
 			return
 		}
+		if !requireWriteOrigin(w, r, trustedOrigins) {
+			return
+		}
+
+		clientKey := clientIP(r, trustProxy)
+		if ok, retryAfter := limiter.Allow(clientKey); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			writeAPIError(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "登录尝试过于频繁，请稍后再试", retryAfter.String())
+			return
+		}
 
 		var req loginReq
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
-			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeAPIError(w, http.StatusBadRequest, "BAD_REQUEST", "请求参数错误", err.Error())
 				return
 			}
@@ -354,10 +459,16 @@ func loginHandler(tokens map[string]bool, sm *SessionManager, cookieSecure bool)
 		}
 
 		token := strings.TrimSpace(req.Token)
-		if !tokens[token] {
+		if !tokens.Valid(token) {
+			if ok, retryAfter := limiter.Failure(clientKey); !ok {
+				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+				writeAPIError(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "登录尝试过于频繁，请稍后再试", retryAfter.String())
+				return
+			}
 			writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Token 无效", "")
 			return
 		}
+		limiter.Success(clientKey)
 
 		sid, err := sm.Create()
 		if err != nil {
@@ -380,10 +491,13 @@ func loginHandler(tokens map[string]bool, sm *SessionManager, cookieSecure bool)
 	}
 }
 
-func logoutHandler(sm *SessionManager, cookieSecure bool) http.HandlerFunc {
+func logoutHandler(sm *SessionManager, cookieSecure bool, trustedOrigins []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
+			return
+		}
+		if !requireWriteOrigin(w, r, trustedOrigins) {
 			return
 		}
 		sid := getSessionID(r)
@@ -403,10 +517,13 @@ func authStatusHandler(sm *SessionManager) http.HandlerFunc {
 }
 
 // ---------------- 上传 ----------------
-func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *TagIndex, imageBaseDir string) http.HandlerFunc {
+func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *TagIndex, imageBaseDir string, trustedOrigins []string, maxStorageBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
+			return
+		}
+		if !requireWriteOrigin(w, r, trustedOrigins) {
 			return
 		}
 		if !requireLogin(sm, w, r) {
@@ -459,31 +576,57 @@ func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *
 			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_FILE_TYPE", "文件类型不支持", mime)
 			return
 		}
+		if !extMatchesMIME(filepath.Ext(safeName), mime) {
+			writeAPIError(w, http.StatusBadRequest, "EXTENSION_MISMATCH", "文件扩展名与图片内容不匹配", filepath.Ext(safeName)+" vs "+mime)
+			return
+		}
 
 		if header.Size > maxUploadSize {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", "文件过大", "")
 			return
 		}
-
-		dstPath := filepath.Join(dir, safeName)
-		if _, err := os.Stat(dstPath); err == nil {
-			writeAPIError(w, http.StatusConflict, "FILE_EXISTS", "文件已存在", safeName)
-			return
-		} else if !os.IsNotExist(err) {
-			log.Println("检查文件是否存在失败:", err)
-			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
-			return
+		if maxStorageBytes > 0 {
+			used, err := directorySize(imageBaseDir)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+				return
+			}
+			if used+header.Size > maxStorageBytes {
+				writeAPIError(w, http.StatusInsufficientStorage, "STORAGE_LIMIT_EXCEEDED", "图片存储空间已达到上限", "")
+				return
+			}
 		}
 
-		dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+		var (
+			dstPath string
+			dst     *os.File
+		)
+		for i := 0; i < 8; i++ {
+			filename, err := newImageFilename(mimeCanonicalExt[mime])
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+				return
+			}
+			dstPath = filepath.Join(dir, filename)
+			dst, err = os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+			if err == nil {
+				break
+			}
+			if !os.IsExist(err) {
+				writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+				return
+			}
+		}
+		if dst == nil {
+			writeAPIError(w, http.StatusConflict, "FILE_EXISTS", "无法生成唯一文件名", "")
 			return
 		}
 		defer dst.Close()
 
 		written, err := io.Copy(dst, file)
 		if err != nil {
+			_ = dst.Close()
+			_ = os.Remove(dstPath)
 			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
 			return
 		}
@@ -621,6 +764,7 @@ func main() {
 	}
 	tags.PruneMissing(cfg.ImageBaseDir)
 	sessions := NewSessionManager()
+	loginLimiter := NewLoginRateLimiter(cfg.LoginMaxFails, cfg.LoginWindow, cfg.LoginBlock)
 	tokens, err := loadTokens(cfg.TokensFile, os.Getenv("OPAPI_TOKENS"))
 	if err != nil {
 		log.Fatalf("加载登录 token 失败: %v", err)
@@ -641,26 +785,33 @@ func main() {
 	mux.HandleFunc("/api/web/json", randomImageJSONWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "json_web", counter, pool, tags))
 	mux.HandleFunc("/api/m/json", randomImageJSONWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "json_m", counter, pool, tags))
 
-	mux.HandleFunc("/api/login", loginHandler(tokens, sessions, cfg.CookieSecure))
-	mux.HandleFunc("/api/logout", logoutHandler(sessions, cfg.CookieSecure))
+	mux.HandleFunc("/api/login", loginHandler(tokens, sessions, cfg.CookieSecure, loginLimiter, cfg.TrustedOrigins, cfg.TrustProxy))
+	mux.HandleFunc("/api/logout", logoutHandler(sessions, cfg.CookieSecure, cfg.TrustedOrigins))
 	mux.HandleFunc("/api/auth/status", authStatusHandler(sessions))
-	mux.HandleFunc("/api/upload", uploadHandler(counter, pool, sessions, tags, cfg.ImageBaseDir))
+	mux.HandleFunc("/api/upload", uploadHandler(counter, pool, sessions, tags, cfg.ImageBaseDir, cfg.TrustedOrigins, cfg.MaxStorageBytes))
 	mux.HandleFunc("/api/admin/tags", adminTagsHandler(sessions, tags))
 	mux.HandleFunc("/api/admin/images", adminImagesHandler(sessions, pool, tags, cfg.ImageBaseDir))
-	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags, cfg.ImageBaseDir))
+	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags, cfg.ImageBaseDir, cfg.TrustedOrigins))
 
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, counter.GetStats())
 	})
 
-	mux.Handle("/public/", safeFileServer("/public/", cfg.PublicDir))
-	imageStaticHandler := safeFileServer("/images/", cfg.ImageBaseDir)
+	mux.Handle("/public/", safeFileServer("/public/", cfg.PublicDir, allowAnyFile))
+	imageStaticHandler := safeFileServer("/images/", cfg.ImageBaseDir, allowImageFile)
 	mux.Handle("/images/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		imageStaticHandler.ServeHTTP(w, r)
 	}))
 
-	server := &http.Server{Addr: cfg.Addr, Handler: mux}
+	server := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           securityHeaders(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 

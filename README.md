@@ -126,6 +126,38 @@ go run .
 
 ---
 
+## 公网部署建议
+
+默认监听地址为 `127.0.0.1:8080`，推荐放在 Nginx / Caddy / Cloudflare Tunnel 等反向代理后面，再由反代负责 HTTPS、访问日志、压缩与证书续期。
+
+如果确实需要程序直接监听所有网卡，请显式设置：
+
+```bash
+OPAPI_ADDR=":8080" go run .
+```
+
+HTTPS 部署时建议同时设置：
+
+```bash
+OPAPI_COOKIE_SECURE=true
+```
+
+如果后台页面和 API 不在同一个域名，需要配置允许的来源：
+
+```bash
+OPAPI_TRUSTED_ORIGINS="https://example.com"
+```
+
+如果服务运行在可信反向代理后，并希望登录限速使用 `X-Forwarded-For` / `X-Real-IP` 中的真实客户端 IP，可设置：
+
+```bash
+OPAPI_TRUST_PROXY=true
+```
+
+不要在未配置可信反代时开启该选项。
+
+---
+
 ## tokens.json 示例
 
 ```json
@@ -144,7 +176,7 @@ go run .
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `OPAPI_ADDR` | `:8080` | 监听地址 |
+| `OPAPI_ADDR` | `127.0.0.1:8080` | 监听地址；如需直接公网监听可设为 `:8080` |
 | `OPAPI_IMAGES_DIR` | `images` | 图片根目录，下面需要有 `web/` 和 `m/` |
 | `OPAPI_PUBLIC_DIR` | `public` | 前端静态页面目录 |
 | `OPAPI_TOKENS_FILE` | `tokens.json` | 登录 Token 文件路径 |
@@ -152,3 +184,9 @@ go run .
 | `OPAPI_STATS_FILE` | `stats.json` | 统计文件路径，启动时会读取，运行中会定时落盘 |
 | `OPAPI_TAGS_FILE` | `tags_index.json` | 标签索引文件路径 |
 | `OPAPI_COOKIE_SECURE` | `false` | HTTPS 部署时建议设为 `true` |
+| `OPAPI_TRUSTED_ORIGINS` | 空 | 允许跨域发起后台写请求的来源，支持逗号/分号/空白分隔 |
+| `OPAPI_TRUST_PROXY` | `false` | 是否信任反向代理传入的真实客户端 IP 头 |
+| `OPAPI_LOGIN_MAX_FAILS` | `8` | 登录限速窗口内最大失败次数，设为 `0` 可关闭 |
+| `OPAPI_LOGIN_WINDOW` | `10m` | 登录失败计数窗口 |
+| `OPAPI_LOGIN_BLOCK` | `15m` | 触发登录限速后的封禁时间 |
+| `OPAPI_MAX_STORAGE_BYTES` | `0` | 图片总存储上限，单位字节；`0` 表示不限制 |

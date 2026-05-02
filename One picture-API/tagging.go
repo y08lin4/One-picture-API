@@ -580,7 +580,7 @@ func adminImagesHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex, image
 	}
 }
 
-func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir string) http.HandlerFunc {
+func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir string, trustedOrigins []string) http.HandlerFunc {
 	type reqBody struct {
 		Path string   `json:"path"`
 		Tags []string `json:"tags"`
@@ -589,6 +589,9 @@ func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir str
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
+			return
+		}
+		if !requireWriteOrigin(w, r, trustedOrigins) {
 			return
 		}
 		if !requireLogin(sm, w, r) {
