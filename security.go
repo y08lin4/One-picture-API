@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/sha256"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -209,7 +211,112 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (sr *statusRecorder) WriteHeader(status int) {
+	if sr.status == 0 {
+		sr.status = status
+		sr.ResponseWriter.WriteHeader(status)
+	}
+}
+
+func (sr *statusRecorder) Write(data []byte) (int, error) {
+	if sr.status == 0 {
+		sr.WriteHeader(http.StatusOK)
+	}
+	n, err := sr.ResponseWriter.Write(data)
+	sr.bytes += n
+	return n, err
+}
+
+func accessLog(next http.Handler, trustProxy bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		log.Printf("access ip=%s method=%s path=%q status=%d bytes=%d duration=%s ua=%q",
+			clientIP(r, trustProxy),
+			r.Method,
+			r.URL.RequestURI(),
+			status,
+			rec.bytes,
+			time.Since(start).Round(time.Millisecond),
+			r.UserAgent(),
+		)
+	})
+}
+
+func chain(handler http.Handler, middlewares ...func(http.Handler) http.Handler) http.Handler {
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](handler)
+	}
+	return handler
+}
+
+func withMethods(handler http.HandlerFunc, methods ...string) http.HandlerFunc {
+	return withMethodsHandler(handler, methods...).ServeHTTP
+}
+
+func withMethodsHandler(handler http.Handler, methods ...string) http.Handler {
+	allowed := make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		allowed[strings.ToUpper(method)] = struct{}{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := allowed[r.Method]; !ok {
+			w.Header().Set("Allow", strings.Join(methods, ", "))
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect "+strings.Join(methods, "/"))
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func withPublicCORS(handler http.HandlerFunc, origins []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setPublicCORSHeaders(w, r, origins)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		handler(w, r)
+	}
+}
+
+func setPublicCORSHeaders(w http.ResponseWriter, r *http.Request, origins []string) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if len(origins) == 0 {
+		return
+	}
+	if containsOrigin(origins, "*") {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	} else if origin != "" && originAllowed(origin, r, origins) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Add("Vary", "Origin")
+	}
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Max-Age", strconv.Itoa(600))
+}
+
+func containsOrigin(origins []string, want string) bool {
+	for _, origin := range origins {
+		if strings.TrimSpace(origin) == want {
+			return true
+		}
+	}
+	return false
 }

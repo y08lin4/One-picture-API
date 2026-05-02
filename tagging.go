@@ -609,8 +609,13 @@ func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir str
 			writeAPIError(w, http.StatusBadRequest, "INVALID_PATH", "图片路径无效", req.Path)
 			return
 		}
-		if info, err := os.Stat(filepath.Join(imageBaseDir, filepath.FromSlash(rel))); err != nil || info.IsDir() {
+		fullPath := filepath.Join(imageBaseDir, filepath.FromSlash(rel))
+		if info, err := os.Stat(fullPath); err != nil || info.IsDir() {
 			writeAPIError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "图片不存在", rel)
+			return
+		}
+		if !detectAllowedImageFile(fullPath) {
+			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_FILE_TYPE", "文件类型不支持", rel)
 			return
 		}
 

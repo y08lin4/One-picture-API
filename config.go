@@ -18,6 +18,9 @@ type Config struct {
 	CookieSecure    bool
 	TrustedOrigins  []string
 	TrustProxy      bool
+	AccessLog       bool
+	DebugErrors     bool
+	PublicCORS      []string
 	LoginMaxFails   int
 	LoginWindow     time.Duration
 	LoginBlock      time.Duration
@@ -37,6 +40,9 @@ func LoadConfig() Config {
 		CookieSecure:    envBool("OPAPI_COOKIE_SECURE", false),
 		TrustedOrigins:  splitList(os.Getenv("OPAPI_TRUSTED_ORIGINS")),
 		TrustProxy:      envBool("OPAPI_TRUST_PROXY", false),
+		AccessLog:       envBool("OPAPI_ACCESS_LOG", true),
+		DebugErrors:     envBool("OPAPI_DEBUG_ERRORS", false),
+		PublicCORS:      splitList(envOrDefault("OPAPI_PUBLIC_CORS_ORIGINS", "*")),
 		LoginMaxFails:   envInt("OPAPI_LOGIN_MAX_FAILS", 8),
 		LoginWindow:     envDuration("OPAPI_LOGIN_WINDOW", 10*time.Minute),
 		LoginBlock:      envDuration("OPAPI_LOGIN_BLOCK", 15*time.Minute),

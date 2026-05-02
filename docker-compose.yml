@@ -1,0 +1,15 @@
+services:
+  one-picture-api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OPAPI_ADDR: :8080
+      OPAPI_IMAGES_DIR: /data/images
+      OPAPI_STATS_FILE: /data/stats.json
+      OPAPI_TAGS_FILE: /data/tags_index.json
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data

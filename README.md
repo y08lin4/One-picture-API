@@ -9,6 +9,7 @@
 - 后台标签管理页面（查看图片、覆盖/追加标签）
 - 上传页拖拽选择 + 点击上传 + 可附加标签
 - 接口调用统计与定时落盘
+- 公网部署基础加固（限速、来源校验、安全响应头、CORS、访问日志）
 
 ---
 
@@ -25,6 +26,7 @@
 - `/api/m/json`：返回手机图静态 URL
 - `/api/web/json?tag=anime`：按标签返回 PC 图 URL
 - `/api/m/json?tag=anime`：按标签返回手机图 URL
+- JSON 与统计接口默认支持公开 CORS，便于第三方前端以 `fetch()` 调用。
 
 ### 登录鉴权
 - `POST /api/login`：提交 token 登录，写入 HttpOnly 会话 Cookie
@@ -77,11 +79,17 @@
 ## 目录结构
 
 ```text
-One picture-API/
+One-picture-API/
 ├─ config.go
 ├─ main.go
-├─ tokens.json
+├─ security.go
+├─ tagging.go
+├─ Dockerfile
+├─ docker-compose.yml
+├─ .env.example
 ├─ tokens.example.json
+├─ tags_index.example.json
+├─ tokens.json
 ├─ stats.json
 ├─ tags_index.json
 ├─ images/
@@ -94,6 +102,8 @@ One picture-API/
    ├─ common.css
    └─ common.js
 ```
+
+说明：`tokens.json`、`stats.json`、`tags_index.json` 和真实图片文件属于本地运行数据，默认不进入 Git；仓库只保留 `images/**/.gitkeep` 作为目录占位。
 
 ---
 
@@ -123,6 +133,31 @@ go run .
 
 启动后访问：
 - `http://localhost:8080`
+
+---
+
+## Docker Compose
+
+复制示例环境变量：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`，至少替换 `OPAPI_TOKENS`，然后启动：
+
+```bash
+docker compose up -d --build
+```
+
+Compose 默认把运行数据放到本地 `data/`：
+
+```text
+data/
+├─ images/
+├─ stats.json
+└─ tags_index.json
+```
 
 ---
 
@@ -156,6 +191,18 @@ OPAPI_TRUST_PROXY=true
 
 不要在未配置可信反代时开启该选项。
 
+推荐架构：
+
+```text
+Client
+  ↓ HTTPS
+Caddy / Nginx / Cloudflare
+  ↓ localhost
+One-picture-API 127.0.0.1:8080
+```
+
+`docs/Caddyfile.example` 提供了一个最小 Caddy 反向代理示例。
+
 ---
 
 ## tokens.json 示例
@@ -185,7 +232,10 @@ OPAPI_TRUST_PROXY=true
 | `OPAPI_TAGS_FILE` | `tags_index.json` | 标签索引文件路径 |
 | `OPAPI_COOKIE_SECURE` | `false` | HTTPS 部署时建议设为 `true` |
 | `OPAPI_TRUSTED_ORIGINS` | 空 | 允许跨域发起后台写请求的来源，支持逗号/分号/空白分隔 |
+| `OPAPI_PUBLIC_CORS_ORIGINS` | `*` | 公开只读接口的 CORS 允许来源 |
 | `OPAPI_TRUST_PROXY` | `false` | 是否信任反向代理传入的真实客户端 IP 头 |
+| `OPAPI_ACCESS_LOG` | `true` | 是否输出访问日志 |
+| `OPAPI_DEBUG_ERRORS` | `false` | 是否向客户端返回详细错误；公网建议保持 `false` |
 | `OPAPI_LOGIN_MAX_FAILS` | `8` | 登录限速窗口内最大失败次数，设为 `0` 可关闭 |
 | `OPAPI_LOGIN_WINDOW` | `10m` | 登录失败计数窗口 |
 | `OPAPI_LOGIN_BLOCK` | `15m` | 触发登录限速后的封禁时间 |

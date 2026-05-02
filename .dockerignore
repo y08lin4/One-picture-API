@@ -1,0 +1,15 @@
+.git
+.github
+.env
+tokens.json
+stats.json
+tags_index.json
+images/*
+!images/.gitkeep
+!images/web/
+!images/web/.gitkeep
+!images/m/
+!images/m/.gitkeep
+*.exe
+*.out
+*.test

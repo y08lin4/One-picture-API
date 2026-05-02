@@ -1,46 +1,4 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>上传图片</title>
-  <link rel="stylesheet" href="/public/common.css">
-</head>
-<body class="upload-page">
-
-<div class="container">
-  <div class="top-actions">
-    <button type="button" onclick="location.href='/public/index.html'">回首页</button>
-    <button type="button" onclick="location.href='/public/admin.html'">标签管理</button>
-    <button type="button" id="logoutBtn">退出登录</button>
-  </div>
-
-  <h1>上传图片</h1>
-
-  <form id="uploadForm">
-    <label>类别：
-      <select name="category" id="categorySelect">
-        <option value="web">PC</option>
-        <option value="m">手机</option>
-      </select>
-    </label>
-
-    <label>标签（可选，逗号分隔）：
-      <input type="text" id="tagsInput" name="tags" placeholder="例如：anime, girl, night">
-    </label>
-
-    <div id="dropZone" class="dropzone" tabindex="0">
-      <p id="dropHint">拖拽图片到这里，或点击选择文件</p>
-      <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" hidden>
-    </div>
-
-    <button type="submit">上传</button>
-  </form>
-  <div id="result"></div>
-</div>
-
-<script src="/public/common.js"></script>
-<script>
-  const form = document.getElementById('uploadForm');
+const form = document.getElementById('uploadForm');
   const result = document.getElementById('result');
   const body = document.body;
   const apiPath = window.AppCommon.detectApiPath();
@@ -50,6 +8,8 @@
   const fileInput = document.getElementById('fileInput');
   const categorySelect = document.getElementById('categorySelect');
   const logoutBtn = document.getElementById('logoutBtn');
+  const homeBtn = document.getElementById('homeBtn');
+  const adminBtn = document.getElementById('adminBtn');
   const tagsInput = document.getElementById('tagsInput');
 
   let selectedFile = null;
@@ -121,6 +81,12 @@
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
     } catch (_) {}
     location.href = '/public/login.html';
+  });
+  homeBtn.addEventListener('click', () => {
+    location.href = '/public/index.html';
+  });
+  adminBtn.addEventListener('click', () => {
+    location.href = '/public/admin.html';
   });
 
   dropZone.addEventListener('click', () => fileInput.click());
@@ -196,7 +162,3 @@
     if (!ok) return;
     refreshBackground();
   })();
-</script>
-
-</body>
-</html>

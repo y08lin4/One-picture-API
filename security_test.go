@@ -51,6 +51,30 @@ func TestRequireWriteOriginRejectsCrossSite(t *testing.T) {
 	}
 }
 
+func TestPublicCORSAndMethodGuard(t *testing.T) {
+	handler := withPublicCORS(withMethods(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}, http.MethodGet, http.MethodHead), []string{"*"})
+
+	optionsReq := httptest.NewRequest(http.MethodOptions, "/api/web/json", nil)
+	optionsReq.Header.Set("Origin", "https://example.com")
+	optionsRR := httptest.NewRecorder()
+	handler.ServeHTTP(optionsRR, optionsReq)
+	if optionsRR.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS status=%d, want %d", optionsRR.Code, http.StatusNoContent)
+	}
+	if got := optionsRR.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin=%q, want *", got)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/web/json", nil)
+	postRR := httptest.NewRecorder()
+	handler.ServeHTTP(postRR, postReq)
+	if postRR.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status=%d, want %d", postRR.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestDetectAllowedImageFileRejectsFakeImage(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake.jpg")

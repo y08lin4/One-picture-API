@@ -1,67 +1,8 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>标签管理</title>
-  <link rel="stylesheet" href="/public/common.css">
-</head>
-<body class="admin-page">
-
-<div class="container">
-  <div class="top-actions">
-    <button type="button" onclick="location.href='/public/index.html'">回首页</button>
-    <button type="button" onclick="location.href='/public/upload.html'">返回上传页</button>
-    <button type="button" id="logoutBtn">退出登录</button>
-  </div>
-
-  <h1>标签管理</h1>
-
-  <div class="section admin-controls">
-    <label>分类：
-      <select id="categorySelect">
-        <option value="">全部</option>
-        <option value="web">PC</option>
-        <option value="m">手机</option>
-      </select>
-    </label>
-    <label>按标签筛选：
-      <input id="tagFilter" type="text" placeholder="例如 anime">
-    </label>
-    <button id="queryBtn" type="button">查询图片</button>
-  </div>
-
-  <div class="section">
-    <h2>标签统计</h2>
-    <p class="muted-note">说明：给图片添加 <code>hidden</code> 标签后，该图片不会出现在默认随机池（不带 <code>tag</code> 参数的 <code>/api/web</code>、<code>/api/m</code>）中。</p>
-    <div id="tagSummary" class="mono-block">加载中...</div>
-  </div>
-
-  <div class="section">
-    <h2>图片列表</h2>
-    <div id="imageList" class="admin-list"></div>
-    <div class="admin-pagination" id="paginationBar">
-      <button id="prevPageBtn" type="button">上一页</button>
-      <span id="pageInfo">第 1 页</span>
-      <button id="nextPageBtn" type="button">下一页</button>
-      <label class="page-size-label">每页
-        <select id="pageSizeSelect">
-          <option value="50">50</option>
-          <option value="100" selected>100</option>
-          <option value="200">200</option>
-          <option value="300">300</option>
-        </select>
-      </label>
-    </div>
-  </div>
-
-  <div id="result"></div>
-</div>
-
-<script src="/public/common.js"></script>
-<script>
-  const body = document.body;
+const body = document.body;
   const apiPath = window.AppCommon.detectApiPath();
   const logoutBtn = document.getElementById('logoutBtn');
+  const homeBtn = document.getElementById('homeBtn');
+  const uploadBtn = document.getElementById('uploadBtn');
   const queryBtn = document.getElementById('queryBtn');
   const categorySelect = document.getElementById('categorySelect');
   const tagFilter = document.getElementById('tagFilter');
@@ -135,6 +76,12 @@
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
     } catch (_) {}
     location.href = '/public/login.html';
+  });
+  homeBtn.addEventListener('click', () => {
+    location.href = '/public/index.html';
+  });
+  uploadBtn.addEventListener('click', () => {
+    location.href = '/public/upload.html';
   });
 
   function renderTagSummary(items) {
@@ -265,7 +212,7 @@
       pageSize = Number(json.pageSize) || pageSize;
       pageSizeSelect.value = String(pageSize);
 
-      imageList.innerHTML = '';
+      imageList.replaceChildren();
       if (items.length === 0) {
         imageList.textContent = '没有匹配图片';
       } else {
@@ -316,7 +263,3 @@
     await loadTagSummary();
     await loadImages(true);
   })();
-</script>
-
-</body>
-</html>

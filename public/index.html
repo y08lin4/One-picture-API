@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>随机图 API</title>
+  <link rel="stylesheet" href="/public/common.css">
+</head>
+<body>
+
+<div class="topbar-actions">
+  <button id="refreshBtn">刷新背景</button>
+  <button id="loginBtn" type="button">登录 / 上传</button>
+  <button id="adminBtn" type="button">标签管理</button>
+</div>
+
+<div class="container home-container">
+  <h1>✨ One Picture API</h1>
+
+  <div class="home-grid">
+    <section class="section endpoint-card">
+      <h2>跳转接口</h2>
+      <a class="endpoint-link" href="/api/web" target="_blank">/api/web<span>随机 PC 图片（302）</span></a>
+      <a class="endpoint-link" href="/api/web?tag=anime" target="_blank">/api/web?tag=anime<span>按标签随机 PC 图（302）</span></a>
+      <a class="endpoint-link" href="/api/m" target="_blank">/api/m<span>随机手机图片（302）</span></a>
+      <a class="endpoint-link" href="/api/m?tag=anime" target="_blank">/api/m?tag=anime<span>按标签随机手机图（302）</span></a>
+    </section>
+
+    <section class="section endpoint-card">
+      <h2>JSON 接口</h2>
+      <a class="endpoint-link" href="/api/web/json" target="_blank">/api/web/json<span>返回静态图片 URL</span></a>
+      <a class="endpoint-link" href="/api/web/json?tag=anime" target="_blank">/api/web/json?tag=anime<span>按标签返回 PC 图 URL</span></a>
+      <a class="endpoint-link" href="/api/m/json" target="_blank">/api/m/json<span>返回静态图片 URL</span></a>
+      <a class="endpoint-link" href="/api/m/json?tag=anime" target="_blank">/api/m/json?tag=anime<span>按标签返回手机图 URL</span></a>
+    </section>
+
+    <section class="section stats home-stats">
+      <div class="stats-head">
+        <h2>使用统计</h2>
+        <div id="timeDisplay">北京时间：--:--:--</div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>接口</th><th>今日调用</th><th>总调用</th></tr>
+        </thead>
+        <tbody id="statsBody"></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script src="/public/common.js"></script>
+<script src="/public/index.js"></script>
+
+</body>
+</html>

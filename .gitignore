@@ -1,8 +1,23 @@
 # Build artifacts
-One picture-API/*.exe
-One picture-API/*.out
-One picture-API/*.test
+*.exe
+*.out
+*.test
+dist/
+build/
 
 # Local secrets and runtime state
-One picture-API/tokens.json
-One picture-API/stats.json
+.env
+tokens.json
+stats.json
+tags_index.json
+data/
+
+# Runtime images are deployment data, not source.
+images/*
+!images/.gitkeep
+!images/web/
+images/web/*
+!images/web/.gitkeep
+!images/m/
+images/m/*
+!images/m/.gitkeep

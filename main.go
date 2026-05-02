@@ -29,6 +29,8 @@ const (
 )
 
 var (
+	debugErrors = false
+
 	allowedImageExt = map[string]bool{
 		".jpg":  true,
 		".jpeg": true,
@@ -295,7 +297,7 @@ func writeAPIError(w http.ResponseWriter, status int, code, message, detail stri
 		"code":    code,
 		"message": message,
 	}
-	if strings.TrimSpace(detail) != "" {
+	if debugErrors && strings.TrimSpace(detail) != "" {
 		resp["detail"] = detail
 	}
 	writeJSON(w, status, resp)
@@ -749,6 +751,7 @@ func (c *Counter) LoadFromFile(filename string) error {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	cfg := LoadConfig()
+	debugErrors = cfg.DebugErrors
 
 	counter := NewCounter()
 	if err := counter.LoadFromFile(cfg.StatsFile); err != nil {
@@ -772,18 +775,18 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", withMethods(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
 		http.Redirect(w, r, "/public/index.html", http.StatusFound)
-	})
+	}, http.MethodGet, http.MethodHead))
 
-	mux.HandleFunc("/api/web", randomImageRedirectWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "redirect_web", counter, pool, tags))
-	mux.HandleFunc("/api/m", randomImageRedirectWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "redirect_m", counter, pool, tags))
-	mux.HandleFunc("/api/web/json", randomImageJSONWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "json_web", counter, pool, tags))
-	mux.HandleFunc("/api/m/json", randomImageJSONWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "json_m", counter, pool, tags))
+	mux.HandleFunc("/api/web", withMethods(randomImageRedirectWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "redirect_web", counter, pool, tags), http.MethodGet, http.MethodHead))
+	mux.HandleFunc("/api/m", withMethods(randomImageRedirectWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "redirect_m", counter, pool, tags), http.MethodGet, http.MethodHead))
+	mux.HandleFunc("/api/web/json", withPublicCORS(withMethods(randomImageJSONWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "json_web", counter, pool, tags), http.MethodGet, http.MethodHead), cfg.PublicCORS))
+	mux.HandleFunc("/api/m/json", withPublicCORS(withMethods(randomImageJSONWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "json_m", counter, pool, tags), http.MethodGet, http.MethodHead), cfg.PublicCORS))
 
 	mux.HandleFunc("/api/login", loginHandler(tokens, sessions, cfg.CookieSecure, loginLimiter, cfg.TrustedOrigins, cfg.TrustProxy))
 	mux.HandleFunc("/api/logout", logoutHandler(sessions, cfg.CookieSecure, cfg.TrustedOrigins))
@@ -793,20 +796,29 @@ func main() {
 	mux.HandleFunc("/api/admin/images", adminImagesHandler(sessions, pool, tags, cfg.ImageBaseDir))
 	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags, cfg.ImageBaseDir, cfg.TrustedOrigins))
 
-	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats", withPublicCORS(withMethods(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, counter.GetStats())
-	})
+	}, http.MethodGet, http.MethodHead), cfg.PublicCORS))
 
-	mux.Handle("/public/", safeFileServer("/public/", cfg.PublicDir, allowAnyFile))
+	mux.Handle("/public/", withMethodsHandler(safeFileServer("/public/", cfg.PublicDir, allowAnyFile), http.MethodGet, http.MethodHead))
 	imageStaticHandler := safeFileServer("/images/", cfg.ImageBaseDir, allowImageFile)
-	mux.Handle("/images/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/images/", withMethodsHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		imageStaticHandler.ServeHTTP(w, r)
-	}))
+	}), http.MethodGet, http.MethodHead))
 
 	server := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           securityHeaders(mux),
+		Addr: cfg.Addr,
+		Handler: chain(
+			mux,
+			securityHeaders,
+			func(next http.Handler) http.Handler {
+				if !cfg.AccessLog {
+					return next
+				}
+				return accessLog(next, cfg.TrustProxy)
+			},
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

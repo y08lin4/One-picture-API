@@ -1,24 +1,4 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>登录上传</title>
-  <link rel="stylesheet" href="/public/common.css">
-</head>
-<body class="login-page">
-  <div class="container">
-    <h1>登录后上传</h1>
-    <form id="loginForm">
-      <label>Token：
-        <input type="password" id="tokenInput" placeholder="请输入上传 Token" required>
-      </label>
-      <button type="submit">登录</button>
-    </form>
-    <div id="result"></div>
-  </div>
-
-  <script>
-    const form = document.getElementById('loginForm');
+const form = document.getElementById('loginForm');
     const tokenInput = document.getElementById('tokenInput');
     const result = document.getElementById('result');
 
@@ -60,6 +40,3 @@
     });
 
     checkLoggedIn();
-  </script>
-</body>
-</html>

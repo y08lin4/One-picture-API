@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-cd /d "%~dp0One picture-API" || (
-  echo [ERROR] Cannot enter project directory: One picture-API
+cd /d "%~dp0" || (
+  echo [ERROR] Cannot enter repository directory.
   pause
   exit /b 1
 )
