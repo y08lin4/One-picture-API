@@ -160,6 +160,21 @@ func (ti *TagIndex) ReplaceTags(rel string, tags []string) {
 	ti.mu.Unlock()
 }
 
+func (ti *TagIndex) DeleteImage(rel string) {
+	normRel, ok := normalizeRelImagePath(rel)
+	if !ok {
+		return
+	}
+	ti.mu.Lock()
+	if _, exists := ti.imageTags[normRel]; exists {
+		delete(ti.imageTags, normRel)
+		ti.rebuildTagImagesLocked()
+		ti.markDirtyLocked()
+	}
+	ti.defaultPoolCache = make(map[string][]string)
+	ti.mu.Unlock()
+}
+
 func (ti *TagIndex) AddTags(rel string, tags []string) {
 	normRel, ok := normalizeRelImagePath(rel)
 	if !ok {
@@ -630,6 +645,63 @@ func adminSetImageTagsHandler(sm *SessionManager, ti *TagIndex, imageBaseDir str
 			"status": "ok",
 			"path":   rel,
 			"tags":   ti.GetTags(rel),
+		})
+	}
+}
+
+func adminDeleteImageHandler(sm *SessionManager, pool *ImagePool, ti *TagIndex, imageBaseDir string, trustedOrigins []string) http.HandlerFunc {
+	type reqBody struct {
+		Path string `json:"path"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "请求方法不允许", "expect POST")
+			return
+		}
+		if !requireWriteOrigin(w, r, trustedOrigins) {
+			return
+		}
+		if !requireLogin(sm, w, r) {
+			return
+		}
+
+		var req reqBody
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "BAD_REQUEST", "请求参数错误", err.Error())
+			return
+		}
+
+		rel, ok := normalizeRelImagePath(req.Path)
+		if !ok {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_PATH", "图片路径无效", req.Path)
+			return
+		}
+		fullPath := filepath.Join(imageBaseDir, filepath.FromSlash(rel))
+		info, err := os.Stat(fullPath)
+		if err != nil || info.IsDir() {
+			writeAPIError(w, http.StatusNotFound, "IMAGE_NOT_FOUND", "图片不存在", rel)
+			return
+		}
+		if !detectAllowedImageFile(fullPath) {
+			writeAPIError(w, http.StatusBadRequest, "UNSUPPORTED_FILE_TYPE", "文件类型不支持", rel)
+			return
+		}
+		if err := os.Remove(fullPath); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+			return
+		}
+
+		category := "web"
+		if strings.HasPrefix(rel, "m/") {
+			category = "m"
+		}
+		pool.RemoveFile(categoryFolder(imageBaseDir, category), fullPath)
+		ti.DeleteImage(rel)
+		ti.InvalidateDefaultPoolCache()
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"path":   rel,
 		})
 	}
 }

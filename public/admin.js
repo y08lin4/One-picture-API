@@ -8,6 +8,7 @@ const body = document.body;
   const tagFilter = document.getElementById('tagFilter');
   const imageList = document.getElementById('imageList');
   const result = document.getElementById('result');
+  const systemSummary = document.getElementById('systemSummary');
   const tagSummary = document.getElementById('tagSummary');
   const prevPageBtn = document.getElementById('prevPageBtn');
   const nextPageBtn = document.getElementById('nextPageBtn');
@@ -102,6 +103,18 @@ const body = document.body;
     nextPageBtn.disabled = currentPage >= totalPages;
   }
 
+  function formatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = n;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    return `${value.toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
+  }
+
   function makeItemRow(item) {
     const row = document.createElement('div');
     row.className = 'admin-item';
@@ -147,6 +160,11 @@ const body = document.body;
     appendBtn.type = 'button';
     appendBtn.textContent = '追加标签';
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'danger-btn';
+    deleteBtn.textContent = '删除图片';
+
     async function submit(mode) {
       try {
         const raw = tagsEl.value || '';
@@ -169,11 +187,30 @@ const body = document.body;
 
     replaceBtn.addEventListener('click', () => submit('replace'));
     appendBtn.addEventListener('click', () => submit('append'));
+    deleteBtn.addEventListener('click', async () => {
+      const ok = confirm(`确定删除这张图片吗？\n${item.path}`);
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/admin/image/delete', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: item.path })
+        });
+        const json = await readApiResponse(res);
+        result.textContent = `已删除: ${json.path}`;
+        await Promise.all([loadSystemSummary(), loadTagSummary()]);
+        await loadImages(false);
+      } catch (err) {
+        result.textContent = '删除失败: ' + (err && err.message ? err.message : err);
+      }
+    });
 
     const actionWrap = document.createElement('div');
     actionWrap.className = 'admin-actions';
     actionWrap.appendChild(replaceBtn);
     actionWrap.appendChild(appendBtn);
+    actionWrap.appendChild(deleteBtn);
 
     row.appendChild(previewWrap);
     row.appendChild(tagsEl);
@@ -188,6 +225,24 @@ const body = document.body;
       renderTagSummary(json.items || []);
     } catch (err) {
       tagSummary.textContent = '加载失败: ' + (err && err.message ? err.message : err);
+    }
+  }
+
+  async function loadSystemSummary() {
+    try {
+      const res = await fetch('/api/admin/system', { credentials: 'same-origin' });
+      const json = await readApiResponse(res);
+      const lines = [
+        `图片数量：${json.imageCount || 0}`,
+        `已用空间：${formatBytes(json.usedBytes || 0)}`
+      ];
+      if (json.maxBytes) {
+        lines.push(`空间上限：${formatBytes(json.maxBytes)}`);
+        lines.push(`剩余空间：${formatBytes(json.freeBytes || 0)}`);
+      }
+      systemSummary.textContent = lines.join('\n');
+    } catch (err) {
+      systemSummary.textContent = '加载失败: ' + (err && err.message ? err.message : err);
     }
   }
 
@@ -260,6 +315,7 @@ const body = document.body;
     if (!ok) return;
     refreshBackground();
     renderPagination();
+    await loadSystemSummary();
     await loadTagSummary();
     await loadImages(true);
   })();

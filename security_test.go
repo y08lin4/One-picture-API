@@ -150,3 +150,78 @@ func TestUploadGeneratesServerSideFilename(t *testing.T) {
 		t.Fatalf("uploaded file missing: %v", err)
 	}
 }
+
+func TestAdminDeleteImageRemovesFilePoolAndTags(t *testing.T) {
+	root := t.TempDir()
+	imageBase := filepath.Join(root, "images")
+	webDir := filepath.Join(imageBase, "web")
+	mobileDir := filepath.Join(imageBase, "m")
+	if err := os.MkdirAll(webDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mobileDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	fullPath := filepath.Join(webDir, "delete-me.gif")
+	if err := os.WriteFile(fullPath, []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pool := NewImagePool(webDir, mobileDir)
+	tags := NewTagIndex()
+	tags.ReplaceTags("web/delete-me.gif", []string{"old"})
+	sm := NewSessionManager()
+	sid, err := sm.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/image/delete", strings.NewReader(`{"path":"web/delete-me.gif"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sid})
+	rr := httptest.NewRecorder()
+
+	adminDeleteImageHandler(sm, pool, tags, imageBase, nil).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
+		t.Fatalf("file should be removed, stat err=%v", err)
+	}
+	if got := tags.GetTags("web/delete-me.gif"); len(got) != 0 {
+		t.Fatalf("tags should be removed, got %v", got)
+	}
+	if files := pool.ListFiles(webDir); len(files) != 0 {
+		t.Fatalf("pool should be empty after delete, got %v", files)
+	}
+}
+
+func TestHealthAndImageStats(t *testing.T) {
+	root := t.TempDir()
+	imageBase := filepath.Join(root, "images")
+	if err := os.MkdirAll(filepath.Join(imageBase, "web"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(imageBase, "web", "a.gif"), []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := imageStats(imageBase, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats["imageCount"] != 1 {
+		t.Fatalf("imageCount=%v, want 1", stats["imageCount"])
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	healthHandler(NewCounter(), imageBase).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("health status=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"status":"ok"`) {
+		t.Fatalf("unexpected health body: %s", rr.Body.String())
+	}
+}

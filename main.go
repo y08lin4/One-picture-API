@@ -131,6 +131,49 @@ func directorySize(root string) (int64, error) {
 	return total, err
 }
 
+func countImages(root string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if detectAllowedImageFile(path) {
+			count++
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return count, err
+}
+
+func imageStats(root string, maxStorageBytes int64) (map[string]any, error) {
+	used, err := directorySize(root)
+	if err != nil {
+		return nil, err
+	}
+	count, err := countImages(root)
+	if err != nil {
+		return nil, err
+	}
+	resp := map[string]any{
+		"imageCount": count,
+		"usedBytes":  used,
+	}
+	if maxStorageBytes > 0 {
+		resp["maxBytes"] = maxStorageBytes
+		resp["freeBytes"] = maxStorageBytes - used
+		if used > maxStorageBytes {
+			resp["freeBytes"] = int64(0)
+		}
+	}
+	return resp, nil
+}
+
 // ---------------- 图片缓存池 ----------------
 type ImagePool struct {
 	mu    sync.RWMutex
@@ -203,6 +246,18 @@ func (p *ImagePool) ListFiles(folder string) []string {
 	copy(res, list)
 	p.mu.RUnlock()
 	return res
+}
+
+func (p *ImagePool) RemoveFile(folder, file string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	list := p.files[folder]
+	for i, f := range list {
+		if f == file {
+			p.files[folder] = append(list[:i], list[i+1:]...)
+			return
+		}
+	}
 }
 
 // ---------------- 会话管理 ----------------
@@ -518,6 +573,43 @@ func authStatusHandler(sm *SessionManager) http.HandlerFunc {
 	}
 }
 
+func healthHandler(counter *Counter, imageBaseDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := "ok"
+		checks := map[string]string{
+			"images": "ok",
+			"stats":  "ok",
+		}
+		if info, err := os.Stat(imageBaseDir); err != nil || !info.IsDir() {
+			status = "degraded"
+			checks["images"] = "missing"
+		}
+		if counter == nil {
+			status = "degraded"
+			checks["stats"] = "unavailable"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": status,
+			"checks": checks,
+			"time":   time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+func adminSystemHandler(sm *SessionManager, imageBaseDir string, maxStorageBytes int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireLogin(sm, w, r) {
+			return
+		}
+		stats, err := imageStats(imageBaseDir, maxStorageBytes)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, stats)
+	}
+}
+
 // ---------------- 上传 ----------------
 func uploadHandler(counter *Counter, pool *ImagePool, sm *SessionManager, tags *TagIndex, imageBaseDir string, trustedOrigins []string, maxStorageBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -787,6 +879,7 @@ func main() {
 	mux.HandleFunc("/api/m", withMethods(randomImageRedirectWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "redirect_m", counter, pool, tags), http.MethodGet, http.MethodHead))
 	mux.HandleFunc("/api/web/json", withPublicCORS(withMethods(randomImageJSONWithTagHandler(webFolder, "web", cfg.ImageBaseDir, "json_web", counter, pool, tags), http.MethodGet, http.MethodHead), cfg.PublicCORS))
 	mux.HandleFunc("/api/m/json", withPublicCORS(withMethods(randomImageJSONWithTagHandler(mobileFolder, "m", cfg.ImageBaseDir, "json_m", counter, pool, tags), http.MethodGet, http.MethodHead), cfg.PublicCORS))
+	mux.HandleFunc("/healthz", withPublicCORS(withMethods(healthHandler(counter, cfg.ImageBaseDir), http.MethodGet, http.MethodHead), cfg.PublicCORS))
 
 	mux.HandleFunc("/api/login", loginHandler(tokens, sessions, cfg.CookieSecure, loginLimiter, cfg.TrustedOrigins, cfg.TrustProxy))
 	mux.HandleFunc("/api/logout", logoutHandler(sessions, cfg.CookieSecure, cfg.TrustedOrigins))
@@ -795,6 +888,8 @@ func main() {
 	mux.HandleFunc("/api/admin/tags", adminTagsHandler(sessions, tags))
 	mux.HandleFunc("/api/admin/images", adminImagesHandler(sessions, pool, tags, cfg.ImageBaseDir))
 	mux.HandleFunc("/api/admin/image/tags", adminSetImageTagsHandler(sessions, tags, cfg.ImageBaseDir, cfg.TrustedOrigins))
+	mux.HandleFunc("/api/admin/image/delete", adminDeleteImageHandler(sessions, pool, tags, cfg.ImageBaseDir, cfg.TrustedOrigins))
+	mux.HandleFunc("/api/admin/system", withMethods(adminSystemHandler(sessions, cfg.ImageBaseDir, cfg.MaxStorageBytes), http.MethodGet, http.MethodHead))
 
 	mux.HandleFunc("/api/stats", withPublicCORS(withMethods(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, counter.GetStats())

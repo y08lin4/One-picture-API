@@ -6,7 +6,7 @@
 - JSON 返回静态图片 URL
 - Token 登录后上传（会话鉴权）
 - 图片标签（tag）索引与按标签随机
-- 后台标签管理页面（查看图片、覆盖/追加标签）
+- 后台标签管理页面（查看图片、覆盖/追加标签、删除图片、查看磁盘占用）
 - 上传页拖拽选择 + 点击上传 + 可附加标签
 - 接口调用统计与定时落盘
 - 公网部署基础加固（限速、来源校验、安全响应头、CORS、访问日志）
@@ -49,10 +49,17 @@
   - 参数：`category`、`tag`、`page`、`pageSize`
 - `POST /api/admin/image/tags`：设置图片标签
   - JSON：`{"path":"web/xxx.webp","tags":["anime"],"mode":"replace|append"}`
+- `POST /api/admin/image/delete`：删除图片并清理标签
+  - JSON：`{"path":"web/xxx.webp"}`
+- `GET /api/admin/system`：查看图片数量、磁盘占用和可选空间上限
 
 ### 统计
 - `GET /api/stats`
 - 统计驻留内存，定时写入 `stats.json`
+
+### 健康检查
+- `GET /healthz`
+- 返回服务状态、基础检查项和服务器 UTC 时间，适合反向代理或监控探活。
 
 ---
 

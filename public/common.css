@@ -424,6 +424,16 @@ a:hover {
 .admin-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.danger-btn {
+  background: rgba(255, 70, 70, 0.72);
+  color: #fff;
+}
+
+.danger-btn:hover:not(:disabled) {
+  background: rgba(255, 55, 55, 0.92);
 }
 
 .admin-pagination {
